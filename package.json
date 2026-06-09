@@ -1,0 +1,12 @@
+{
+  "name": "paper-wars-1v1",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Paper Wars: mobile-first 1v1 real-time strategy over localhost WebSocket.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

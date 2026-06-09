@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Paper Wars">
+  <rect width="512" height="512" rx="96" fill="#123f46"/>
+  <path d="M92 92h328v328H92z" fill="#f4f7f3"/>
+  <path d="M92 196h328M92 300h328M196 92v328M300 92v328" stroke="#cbd6cf" stroke-width="18"/>
+  <path d="M92 92h164v164H92z" fill="#58afe7" opacity=".9"/>
+  <path d="M256 92h164v104H256z" fill="#f4c84f" opacity=".9"/>
+  <path d="M196 300h224v120H196z" fill="#63d28b" opacity=".9"/>
+  <path d="M108 108h128v128H108z" fill="#2f74ff" opacity=".68"/>
+  <path d="M276 116h116v56H276z" fill="#d84444" opacity=".72"/>
+  <path d="M224 320h168v72H224z" fill="#247c54" opacity=".72"/>
+  <path d="M92 92h328v328H92z" fill="none" stroke="#182026" stroke-width="24"/>
+</svg>

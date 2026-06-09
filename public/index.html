@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f7f3ea">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Paper Wars">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>БУМАЖНЫЕ ВОЙНЫ</title>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="app">
+      <section id="lobby" class="lobby">
+        <div class="lobby__panel">
+          <div class="brand">
+            <span class="brand__mark">▦</span>
+            <div>
+              <h1>БУМАЖНЫЕ ВОЙНЫ</h1>
+              <p>создай лобби или войди по коду</p>
+            </div>
+          </div>
+          <div class="lobby-tools">
+            <button id="lobbyMusic" class="top-tool" type="button" title="Музыка">♪</button>
+            <button id="lobbyThemeButton" class="top-tool" type="button" title="Тема">☾</button>
+          </div>
+
+          <div class="lobby-mode" aria-label="Режим лобби">
+            <button class="lobby-mode__button is-active" data-lobby-mode="create" type="button">Создать</button>
+            <button class="lobby-mode__button" data-lobby-mode="enter" type="button">Войти</button>
+          </div>
+
+          <form id="joinForm" class="join">
+            <label class="field">
+              <span>Страна</span>
+              <input id="countryInput" maxlength="22" autocomplete="off" placeholder="Например, Бумажная Республика">
+            </label>
+
+            <div class="palette" id="colorPalette" aria-label="Выбор цвета"></div>
+            <div id="ideologyPanel" class="ideology-panel"></div>
+
+            <label id="lobbyCodeField" class="field hidden">
+              <span>Код лобби</span>
+              <input id="lobbyCodeInput" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="0000">
+            </label>
+
+            <div id="lobbySettings" class="lobby-settings"></div>
+
+            <button id="lobbySubmit" class="primary" type="submit">Создать лобби</button>
+          </form>
+
+          <div id="lobbyNotice" class="lobby-notice"></div>
+          <p id="connectionStatus" class="connection">Подключение...</p>
+        </div>
+      </section>
+
+      <section id="game" class="game hidden" aria-label="Игровой экран">
+        <div class="battlefield">
+          <header class="hud">
+            <div id="quickStatus" class="quick-status"></div>
+            <div class="top-tools" aria-label="Системные действия">
+              <button id="gameMusic" class="top-tool" type="button" title="Музыка">♪</button>
+              <button id="themeButton" class="top-tool" type="button" title="Тема">☾</button>
+              <button id="statsButton" class="top-tool" type="button" title="Статистика">▦</button>
+            </div>
+          </header>
+          <div id="eventBanner" class="event-banner hidden"></div>
+          <div id="worldEventStatus" class="world-event hidden"></div>
+          <div class="map-wrap">
+            <div id="map" class="map" aria-label="Карта БУМАЖНЫЕ ВОЙНЫ"></div>
+          </div>
+          <div id="mapTools" class="map-tools" aria-label="Карта">
+            <button class="map-tool" data-map-tool="zoomOut" type="button" title="Меньше">−</button>
+            <button class="map-tool" data-map-tool="home" type="button" title="К штабу">⌂</button>
+            <button class="map-tool" data-map-tool="zoomIn" type="button" title="Больше">+</button>
+          </div>
+          <div id="mapMovePad" class="map-move-pad hidden" aria-label="Марш">
+            <button class="map-move-button map-move-button--north" data-command="moveDir" data-dx="0" data-dy="-1" type="button" title="Вверх">↑</button>
+            <button class="map-move-button map-move-button--west" data-command="moveDir" data-dx="-1" data-dy="0" type="button" title="Влево">←</button>
+            <button class="map-move-button map-move-button--east" data-command="moveDir" data-dx="1" data-dy="0" type="button" title="Вправо">→</button>
+            <button class="map-move-button map-move-button--south" data-command="moveDir" data-dx="0" data-dy="1" type="button" title="Вниз">↓</button>
+          </div>
+          <button id="chatOpen" class="chat-toggle" type="button" aria-controls="chatDrawer">Чат</button>
+        </div>
+
+        <section id="chatDrawer" class="chat-drawer hidden">
+          <header class="chat-head">
+            <strong>События и чат</strong>
+            <button id="chatClose" type="button">×</button>
+          </header>
+          <div id="chatLog" class="chat-log"></div>
+          <form id="chatForm" class="chat-form">
+            <input id="chatInput" maxlength="140" autocomplete="off" placeholder="Сообщение">
+            <button type="submit">↵</button>
+          </form>
+        </section>
+
+        <section id="statsOverlay" class="stats-overlay hidden">
+          <header class="stats-overlay__head">
+            <strong>Статистика</strong>
+            <button id="statsClose" type="button">×</button>
+          </header>
+          <div id="statsOverlayContent" class="stats-overlay__content"></div>
+        </section>
+
+        <section id="diplomacyPrompt" class="diplomacy-prompt hidden"></section>
+
+        <section class="controls">
+          <div id="selectionBar" class="selection-bar">Выбери клетку</div>
+          <div id="tabContent" class="tab-content"></div>
+          <nav class="tabs" aria-label="Игровые вкладки">
+            <button class="tab is-active" data-tab="troops" type="button">⚔ Войска</button>
+            <button class="tab" data-tab="buildings" type="button">🏗 Постройки</button>
+            <button class="tab" data-tab="actions" type="button">💥 Действия</button>
+            <button id="developerButton" class="tab utility-tab" type="button">Dev</button>
+          </nav>
+        </section>
+
+        <div id="endOverlay" class="end-overlay hidden">
+          <div class="end-box">
+            <h2 id="endTitle">Победа</h2>
+            <p id="endReason"></p>
+            <button id="continueBotsButton" class="primary" type="button">Играть дальше с ботами</button>
+            <button id="restartButton" class="primary" type="button">Новое лобби</button>
+          </div>
+        </div>
+      </section>
+
+      <div id="toast" class="toast hidden"></div>
+      <div id="modalLayer" class="modal-layer hidden"></div>
+    </main>
+
+    <script src="/client.js"></script>
+  </body>
+</html>
