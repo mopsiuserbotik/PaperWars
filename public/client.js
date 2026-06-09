@@ -153,6 +153,9 @@ const els = {
   colorPalette: document.querySelector("#colorPalette"),
   ideologyPanel: document.querySelector("#ideologyPanel"),
   lobbyModeButtons: document.querySelectorAll("[data-lobby-mode]"),
+  lobbyHome: document.querySelector("#lobbyHome"),
+  lobbyStartButtons: document.querySelectorAll("[data-lobby-start]"),
+  lobbyBack: document.querySelector("#lobbyBack"),
   lobbyCodeField: document.querySelector("#lobbyCodeField"),
   lobbyCodeInput: document.querySelector("#lobbyCodeInput"),
   lobbySettings: document.querySelector("#lobbySettings"),
@@ -186,6 +189,7 @@ const els = {
   statsClose: document.querySelector("#statsClose"),
   statsOverlayContent: document.querySelector("#statsOverlayContent"),
   themeButton: document.querySelector("#themeButton"),
+  exitButton: document.querySelector("#exitButton"),
   developerButton: document.querySelector("#developerButton"),
   endOverlay: document.querySelector("#endOverlay"),
   endTitle: document.querySelector("#endTitle"),
@@ -202,6 +206,7 @@ let state = null;
 let selectedColor = null;
 let selectedIdeology = "democracy";
 let lobbyMode = "create";
+let lobbyStep = "home";
 let lobbySettings = null;
 let selected = null;
 let pendingMoveSelection = null;
@@ -403,8 +408,27 @@ function bindUi() {
   els.lobbyModeButtons?.forEach((button) => {
     button.addEventListener("click", () => {
       lobbyMode = button.dataset.lobbyMode || "create";
+      lobbyStep = "form";
       renderLobby();
     });
+  });
+
+  els.lobbyStartButtons?.forEach((button) => {
+    button.addEventListener("click", () => {
+      lobbyMode = button.dataset.lobbyStart || "create";
+      lobbyStep = "form";
+      renderLobby();
+      requestAnimationFrame(() => els.countryInput?.focus?.());
+    });
+  });
+
+  els.lobbyBack?.addEventListener("click", () => {
+    if (lobby?.players?.[me]?.joined) {
+      openExitModal();
+      return;
+    }
+    lobbyStep = "home";
+    renderLobby();
   });
 
   els.colorPalette.addEventListener("click", (event) => {
@@ -465,6 +489,8 @@ function bindUi() {
     statsOpen = false;
     renderStatsOverlay();
   });
+
+  els.exitButton?.addEventListener("click", openExitModal);
 
   els.developerButton.addEventListener("click", openDeveloperMenu);
 
@@ -572,6 +598,13 @@ function bindUi() {
 }
 
 function handleServerMessage(message) {
+  if (message.type === "roomClosed") {
+    pendingJoinPayload = null;
+    lobbyStep = "home";
+    showToast(message.message || "Комната удалена.");
+    return;
+  }
+
   if (message.type === "full") {
     serverFull = true;
     clearTimeout(reconnectTimer);
@@ -597,7 +630,13 @@ function handleServerMessage(message) {
     if (!lobbySettings || lobby.players?.[me]?.joined) {
       lobbySettings = normalizeLobbySettings(lobby.settings);
     }
-    if (lobby.created && me !== lobby.hostId && !lobby.players?.[me]?.joined) {
+    if (!lobby.created && !lobby.players?.[me]?.joined && !pendingJoinPayload) {
+      lobbyStep = "home";
+    }
+    if (lobby.players?.[me]?.joined || pendingJoinPayload) {
+      lobbyStep = "form";
+    }
+    if (lobby.created && me !== lobby.hostId && !lobby.players?.[me]?.joined && lobbyStep !== "home") {
       lobbyMode = "enter";
     } else if (lobby.hostId === me) {
       lobbyMode = "create";
@@ -885,6 +924,11 @@ function renderLobby() {
 }
 
 function renderLobbyMode() {
+  const onHome = lobbyStep === "home";
+  els.lobbyHome?.classList.toggle("hidden", !onHome);
+  els.joinForm?.classList.toggle("hidden", onHome);
+  els.lobbyBack?.classList.toggle("hidden", onHome);
+  document.querySelector(".lobby-mode")?.classList.toggle("hidden", onHome);
   els.lobbyModeButtons?.forEach((button) => {
     button.classList.toggle("is-active", button.dataset.lobbyMode === lobbyMode);
   });
@@ -938,6 +982,10 @@ function renderLobbySettings() {
 function renderLobbyNotice() {
   if (!els.lobbyNotice) return;
   const myPlayer = lobby.players?.[me];
+  if (lobbyStep === "home") {
+    els.lobbyNotice.innerHTML = `<strong>Выбери режим</strong><span>Создай комнату или войди по коду друга.</span>`;
+    return;
+  }
   if (lobby.created && lobby.hostId === me && lobby.code) {
     els.lobbyNotice.innerHTML = `<strong>Код лобби: ${escapeHtml(lobby.code)}</strong><span>Передай этот код второму игроку. Матч стартует после входа.</span>`;
     return;
@@ -2086,6 +2134,12 @@ function handleModalClick(event) {
     return;
   }
 
+  if (event.target.closest("[data-exit-confirm]")) {
+    closeModal();
+    send({ type: "leaveRoom" }, { priority: true });
+    return;
+  }
+
   const step = event.target.closest("[data-resource-step]");
   if (step) {
     const input = els.modalLayer.querySelector(`[data-resource-input="${step.dataset.resourceStep}"]`);
@@ -2191,6 +2245,23 @@ function closeModal() {
   modalSubmitHandler = null;
   els.modalLayer.classList.add("hidden");
   els.modalLayer.innerHTML = "";
+}
+
+function openExitModal() {
+  els.modalLayer.innerHTML = `
+    <div class="modal-box modal-box--small" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <strong>Выйти из комнаты?</strong>
+        <button data-modal-close type="button">×</button>
+      </div>
+      <p class="modal-note">Комната будет удалена для всех игроков. Текущая партия не сохранится.</p>
+      <div class="modal-actions">
+        <button class="secondary" data-modal-close type="button">Остаться</button>
+        <button class="primary danger-action" data-exit-confirm type="button">Выйти</button>
+      </div>
+    </div>
+  `;
+  els.modalLayer.classList.remove("hidden");
 }
 
 function openDeveloperMenu() {

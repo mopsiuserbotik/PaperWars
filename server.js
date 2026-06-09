@@ -995,6 +995,11 @@ function handleMessage(client, message) {
 }
 
 function handleGameMessage(client, message) {
+  if (message.type === "leaveRoom") {
+    handleLeaveRoom(client);
+    return;
+  }
+
   if (message.type === "chat") {
     handleChat(client, message);
     return;
@@ -1204,6 +1209,35 @@ function addSystemEvent(text, options = {}) {
     text,
     sound: options.sound
   }, options);
+}
+
+function handleLeaveRoom(client) {
+  const player = client.playerId ? game.players[client.playerId] : null;
+  const country = cleanText(player?.country || "", 40) || (client.playerId === "p2" ? "Игрок 2" : "Игрок 1");
+  closeCurrentRoom(`${country} вышел. Комната удалена.`);
+}
+
+function closeCurrentRoom(message) {
+  if (!game?.id) return;
+  const room = game;
+  const roomClients = clientsForCurrentGame();
+  clearPendingStateBroadcast();
+  clearInterval(room.timer);
+  room.timer = null;
+  games.delete(room.id);
+
+  for (const client of roomClients) {
+    client.gameId = null;
+    client.playerId = null;
+    client.spectator = false;
+    client.pendingState = null;
+    client.waitingForDrain = false;
+    client.lastMapVersionSent = -1;
+    client.lastChatVersionSent = -1;
+    send(client, { type: "roomClosed", message });
+    sendHello(client);
+    send(client, emptyLobbyPayload());
+  }
 }
 
 function handleRestart(client) {

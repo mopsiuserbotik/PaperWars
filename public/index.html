@@ -29,6 +29,13 @@
             <button id="lobbyThemeButton" class="top-tool" type="button" title="Тема">☾</button>
           </div>
 
+          <div id="lobbyHome" class="lobby-home">
+            <button class="lobby-home__button" data-lobby-start="create" type="button">Создать</button>
+            <button class="lobby-home__button" data-lobby-start="enter" type="button">Войти</button>
+          </div>
+
+          <button id="lobbyBack" class="lobby-back hidden" type="button">← Назад</button>
+
           <div class="lobby-mode" aria-label="Режим лобби">
             <button class="lobby-mode__button is-active" data-lobby-mode="create" type="button">Создать</button>
             <button class="lobby-mode__button" data-lobby-mode="enter" type="button">Войти</button>
@@ -66,6 +73,7 @@
               <button id="gameMusic" class="top-tool" type="button" title="Музыка">♪</button>
               <button id="themeButton" class="top-tool" type="button" title="Тема">☾</button>
               <button id="statsButton" class="top-tool" type="button" title="Статистика">▦</button>
+              <button id="exitButton" class="top-tool top-tool--danger" type="button" title="Выход">×</button>
             </div>
           </header>
           <div id="eventBanner" class="event-banner hidden"></div>

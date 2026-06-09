@@ -152,6 +152,40 @@ h1 {
   font-size: 13px;
 }
 
+.lobby-home {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.lobby-home__button {
+  min-height: 74px;
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--button);
+  color: var(--ink);
+  box-shadow: var(--soft-shadow);
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.lobby-home__button:first-child {
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+.lobby-back {
+  min-height: 36px;
+  margin-top: 14px;
+  padding: 0 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--button);
+  color: var(--ink);
+  font-weight: 900;
+}
+
 .join {
   display: grid;
   gap: 14px;
@@ -1396,6 +1430,10 @@ h1 {
   color: #fff;
 }
 
+.top-tool--danger {
+  color: var(--danger);
+}
+
 .quick-status {
   display: grid;
   gap: 6px;
@@ -2187,6 +2225,25 @@ h1 {
 
 .modal-submit {
   width: 100%;
+}
+
+.modal-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.secondary {
+  min-height: var(--tap);
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--button);
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.danger-action {
+  background: var(--danger);
 }
 
 .modal-note {
