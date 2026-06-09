@@ -279,6 +279,7 @@ let lastDisconnectNotice = "";
 let mapZoom = 1;
 let modalSubmitHandler = null;
 let devUnlocked = false;
+let trollCensorTimer = null;
 const activePointers = new Map();
 let pinchStartDistance = 0;
 let pinchStartZoom = 1;
@@ -836,6 +837,10 @@ function handleServerMessage(message) {
   if (message.type === "sfx") {
     if (message.name === "shot") addShotEffect(message);
     playSfx(message.name, message);
+  }
+
+  if (message.type === "troll") {
+    applyTrollEffect(message.troll || {});
   }
 
   if (message.type === "chat") {
@@ -2295,6 +2300,20 @@ function handleModalClick(event) {
     return;
   }
 
+  const trollLoan = event.target.closest("[data-troll-loan-choice]");
+  if (trollLoan) {
+    const id = trollLoan.dataset.trollId || "";
+    const choice = trollLoan.dataset.trollLoanChoice || "";
+    closeModal();
+    send({ type: "trollResponse", id, choice }, { priority: true });
+    return;
+  }
+
+  if (event.target.closest("[data-troll-fake-win]")) {
+    showToast("Недостаточно уважения.");
+    return;
+  }
+
   const step = event.target.closest("[data-resource-step]");
   if (step) {
     const input = els.modalLayer.querySelector(`[data-resource-input="${step.dataset.resourceStep}"]`);
@@ -2367,6 +2386,14 @@ function handleModalClick(event) {
       }
     }
   }
+
+  if (event.target.closest("[data-dev-troll-submit]")) {
+    const targetId = els.modalLayer.querySelector("[data-dev-country]")?.value;
+    const trollType = els.modalLayer.querySelector("[data-dev-troll]")?.value;
+    const seconds = Number(els.modalLayer.querySelector("[data-dev-troll-seconds]")?.value || 8);
+    send({ type: "devResources", code: DEV_CODE, action: "troll", targetId, trollType, seconds }, { priority: true });
+    return;
+  }
 }
 
 function handleModalChange(event) {
@@ -2400,6 +2427,100 @@ function closeModal() {
   modalSubmitHandler = null;
   els.modalLayer.classList.add("hidden");
   els.modalLayer.innerHTML = "";
+}
+
+function applyTrollEffect(troll = {}) {
+  const type = troll.type || "";
+  if (type === "adLoan") {
+    openTrollLoanModal(troll);
+    return;
+  }
+  if (type === "fakeEvent") {
+    const text = troll.text || "ООН признала вашу страну слишком слабой.";
+    addLocalSystemMessage(text);
+    showToast(text);
+    return;
+  }
+  if (type === "censorMap") {
+    const seconds = clamp(Math.round(Number(troll.seconds) || 8), 1, 60);
+    els.map?.classList.add("is-censored");
+    clearTimeout(trollCensorTimer);
+    trollCensorTimer = setTimeout(() => {
+      els.map?.classList.remove("is-censored");
+      trollCensorTimer = null;
+    }, seconds * 1000);
+    showToast(`Карта засекречена на ${seconds} сек.`);
+    return;
+  }
+  if (type === "fakeFine") {
+    openTrollNoticeModal("Штраф", troll.text || "Штраф -999 золота", "Оплатить морально");
+    showToast("-999 золота");
+    return;
+  }
+  if (type === "fakeWin") {
+    openTrollFakeWinModal();
+  }
+}
+
+function openTrollLoanModal(troll) {
+  const id = troll.id || "";
+  els.modalLayer.innerHTML = `
+    <div class="modal-box modal-box--small troll-modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <strong>${escapeHtml(troll.title || "RAHMAT BANK")}</strong>
+        <button data-modal-close type="button">×</button>
+      </div>
+      <p class="modal-note">${escapeHtml(troll.text || "Вашей стране срочно нужен кредит от RAHMAT BANK.")}</p>
+      <div class="modal-actions">
+        <button class="primary" data-troll-loan-choice="take" data-troll-id="${escapeHtml(id)}" type="button">Взять 999%</button>
+        <button class="secondary" data-troll-loan-choice="suffer" data-troll-id="${escapeHtml(id)}" type="button">Страдать</button>
+      </div>
+    </div>
+  `;
+  els.modalLayer.classList.remove("hidden");
+}
+
+function openTrollNoticeModal(title, text, buttonText = "Закрыть") {
+  els.modalLayer.innerHTML = `
+    <div class="modal-box modal-box--small troll-modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <strong>${escapeHtml(title)}</strong>
+        <button data-modal-close type="button">×</button>
+      </div>
+      <p class="modal-note">${escapeHtml(text)}</p>
+      <button class="primary modal-submit" data-modal-close type="button">${escapeHtml(buttonText)}</button>
+    </div>
+  `;
+  els.modalLayer.classList.remove("hidden");
+}
+
+function openTrollFakeWinModal() {
+  els.modalLayer.innerHTML = `
+    <div class="modal-box modal-box--small troll-modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <strong>Почти победа</strong>
+        <button data-modal-close type="button">×</button>
+      </div>
+      <p class="modal-note">Найдена секретная кнопка победы.</p>
+      <button class="primary modal-submit" data-troll-fake-win type="button">Победить</button>
+    </div>
+  `;
+  els.modalLayer.classList.remove("hidden");
+}
+
+function addLocalSystemMessage(text) {
+  if (!state) return;
+  const entry = {
+    id: `local-troll-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    type: "system",
+    name: "Событие",
+    color: "#202020",
+    text,
+    at: Date.now()
+  };
+  state.chat = [...(state.chat || []), entry].slice(-40);
+  renderChat();
+  renderPanels();
 }
 
 function openExitModal() {
@@ -2474,6 +2595,23 @@ function openDeveloperResourceMenu(selectedId = null) {
         </label>
         <button data-dev-cheat="triggerEvent" type="button">Запустить событие</button>
         <button data-dev-cheat="clearEvent" type="button">Снять событие</button>
+      </div>
+      <div class="dev-event">
+        <label class="field">
+          <span>Троллинг</span>
+          <select data-dev-troll>
+            <option value="adLoan">Реклама RAHMAT BANK</option>
+            <option value="fakeEvent">Фейковое событие ООН</option>
+            <option value="censorMap">Цензура карты</option>
+            <option value="fakeFine">Фейковый штраф -999</option>
+            <option value="fakeWin">Фейковая кнопка победы</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Секунд для цензуры</span>
+          <input data-dev-troll-seconds type="number" min="1" max="60" step="1" value="8">
+        </label>
+        <button data-dev-troll-submit type="button">Отправить троллинг</button>
       </div>
       <div class="dev-cheats">
         <button data-dev-cheat="clearCooldowns" type="button">Убрать перезарядки</button>

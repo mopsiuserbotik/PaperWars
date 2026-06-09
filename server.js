@@ -20,6 +20,7 @@ const EVENT_SFX_FILES = {
   war: "war.mp3",
   win: "win.mp3"
 };
+const TROLL_CENSOR_MAX_SECONDS = 60;
 const BOT_PROFILES = {
   farmers:   { country: "Фермеры",   color: "farmers",   colorValue: "#19c9c2", personality: "passive" },
   anarchists:{ country: "Анархисты", color: "anarchists",colorValue: "#2f3437", personality: "aggressive" },
@@ -1062,6 +1063,11 @@ function handleGameMessage(client, message) {
     return;
   }
 
+  if (message.type === "trollResponse") {
+    handleTrollResponse(client, message);
+    return;
+  }
+
   if (!client.playerId || client.spectator) {
     sendError(client, "Зрители не могут отдавать приказы.");
     return;
@@ -1342,6 +1348,36 @@ function handleContinueWithBots(client) {
   }
   addSystemEvent(`${game.players[client.playerId].country} продолжает партию против ботов.`, { sound: "diplomacy" });
   recomputePlayerFlags();
+  broadcastStateNow();
+}
+
+function handleTrollResponse(client, message) {
+  if (!client.playerId || client.spectator) return;
+  const promptId = cleanText(message.id, 80);
+  const choice = cleanText(message.choice, 20);
+  const prompt = game.trollPrompts?.[promptId];
+  if (!prompt || prompt.targetId !== client.playerId || prompt.type !== "adLoan") {
+    sendError(client, "Реклама уже неактуальна.");
+    return;
+  }
+  delete game.trollPrompts[promptId];
+  if (prompt.expiresAt && Date.now() > prompt.expiresAt) {
+    sendError(client, "Реклама уже закрылась.");
+    return;
+  }
+
+  const player = game.players[client.playerId];
+  if (!player) return;
+  if (choice === "take") {
+    addResource(player, "gold", 1);
+    sendInfo(client, "RAHMAT BANK одобрил кредит: +1 золото.");
+  } else if (choice === "suffer") {
+    player.resources.gold = Math.max(0, round1((player.resources.gold || 0) - 1));
+    sendInfo(client, "Вы выбрали страдать: -1 золото.");
+  } else {
+    sendError(client, "Выбери действие.");
+    return;
+  }
   broadcastStateNow();
 }
 
@@ -2182,6 +2218,11 @@ function handleDevResources(client, message) {
     return;
   }
 
+  if (action === "troll") {
+    sendDevTroll(client, targetId, message);
+    return;
+  }
+
   if (action === "maxResources") {
     setResourcesExact(target, Object.fromEntries(RESOURCE_KEYS.map((key) => [key, 999])));
     sendInfo(client, `${target.country}: ресурсы выставлены на 999.`);
@@ -2193,6 +2234,72 @@ function handleDevResources(client, message) {
   setResourcesExact(target, resources);
   sendInfo(client, `${target.country}: ресурсы обновлены.`);
   broadcastStateNow();
+}
+
+function sendDevTroll(client, targetId, message) {
+  const target = game.players[targetId];
+  const targetClient = playerClient(targetId);
+  if (!target || !PLAYER_IDS.includes(targetId)) {
+    sendError(client, "Выбери страну на карте.");
+    return;
+  }
+  if (!targetClient) {
+    sendError(client, "У этой страны сейчас нет подключенного игрока.");
+    return;
+  }
+
+  const trollType = cleanText(message.trollType, 30);
+  const promptId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const seconds = clamp(Math.round(Number(message.seconds) || 8), 1, TROLL_CENSOR_MAX_SECONDS);
+  let troll = null;
+
+  if (trollType === "adLoan") {
+    game.trollPrompts[promptId] = {
+      id: promptId,
+      type: "adLoan",
+      targetId,
+      expiresAt: Date.now() + 60_000
+    };
+    troll = {
+      id: promptId,
+      type: "adLoan",
+      title: "RAHMAT BANK",
+      text: "Вашей стране срочно нужен кредит от RAHMAT BANK.",
+      buttons: ["Взять 999%", "Страдать"]
+    };
+  } else if (trollType === "fakeEvent") {
+    troll = {
+      id: promptId,
+      type: "fakeEvent",
+      text: "ООН признала вашу страну слишком слабой."
+    };
+  } else if (trollType === "censorMap") {
+    troll = {
+      id: promptId,
+      type: "censorMap",
+      seconds
+    };
+  } else if (trollType === "fakeFine") {
+    troll = {
+      id: promptId,
+      type: "fakeFine",
+      text: "Штраф -999 золота"
+    };
+  } else if (trollType === "fakeWin") {
+    troll = {
+      id: promptId,
+      type: "fakeWin",
+      text: "Победить"
+    };
+  }
+
+  if (!troll) {
+    sendError(client, "Выбери троллинг.");
+    return;
+  }
+
+  send(targetClient, { type: "troll", troll });
+  sendInfo(client, `${target.country || targetId}: троллинг отправлен.`);
 }
 
 function forceFactoryStrikes(playerId) {
@@ -3576,6 +3683,7 @@ function createFreshGame() {
     supportDeals: {},
     diplomacyCooldowns: {},
     resourceRequestCooldowns: {},
+    trollPrompts: {},
     lobbyCreated: false,
     lobbyHostId: null,
     lobbyCode: "",

@@ -654,6 +654,10 @@ h1 {
   background: var(--paper);
 }
 
+.map.is-censored {
+  filter: blur(7px) saturate(0.35) contrast(0.75);
+}
+
 .map.event-rain::before,
 .map.event-drought::before,
 .map.event-fog::before,
@@ -2329,6 +2333,11 @@ h1 {
   font-size: 12px;
   font-weight: 800;
   line-height: 1.25;
+}
+
+.troll-modal {
+  border-color: color-mix(in srgb, var(--accent-strong) 45%, var(--paper-line));
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.22);
 }
 
 .dev-cheats {
