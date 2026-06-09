@@ -1,4 +1,4 @@
-const CACHE_NAME = "paper-wars-shell-v3";
+const CACHE_NAME = "paper-wars-shell-v4";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -6,7 +6,10 @@ const APP_SHELL = [
   "/client.js",
   "/manifest.webmanifest",
   "/icons/icon.svg",
-  "/music/theme.mp3"
+  "/music/theme.mp3",
+  "/music/fail.mp3",
+  "/music/war.mp3",
+  "/music/win.mp3"
 ];
 
 self.addEventListener("install", (event) => {

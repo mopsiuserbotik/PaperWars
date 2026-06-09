@@ -156,9 +156,17 @@ const els = {
   lobbyHome: document.querySelector("#lobbyHome"),
   lobbyStartButtons: document.querySelectorAll("[data-lobby-start]"),
   lobbyBack: document.querySelector("#lobbyBack"),
+  lobbySteps: document.querySelector("#lobbySteps"),
+  lobbyStepButtons: document.querySelectorAll("[data-lobby-step]"),
+  lobbySections: document.querySelectorAll("[data-lobby-section]"),
+  lobbyPlayerCountField: document.querySelector("#lobbyPlayerCountField"),
+  lobbyPlayerCountInput: document.querySelector("#lobbyPlayerCountInput"),
+  lobbyPlayerSlots: document.querySelector("#lobbyPlayerSlots"),
   lobbyCodeField: document.querySelector("#lobbyCodeField"),
   lobbyCodeInput: document.querySelector("#lobbyCodeInput"),
   lobbySettings: document.querySelector("#lobbySettings"),
+  lobbyPrevStep: document.querySelector("#lobbyPrevStep"),
+  lobbyNextStep: document.querySelector("#lobbyNextStep"),
   lobbySubmit: document.querySelector("#lobbySubmit"),
   lobbyNotice: document.querySelector("#lobbyNotice"),
   connectionStatus: document.querySelector("#connectionStatus"),
@@ -207,6 +215,7 @@ let selectedColor = null;
 let selectedIdeology = "democracy";
 let lobbyMode = "create";
 let lobbyStep = "home";
+let lobbyFormStep = "room";
 let lobbySettings = null;
 let selected = null;
 let pendingMoveSelection = null;
@@ -252,6 +261,12 @@ let heartbeatTimer = null;
 let serverFull = false;
 let musicPlaylist = ["/music/theme.mp3"];
 let musicIndex = 0;
+let eventSfxSources = {
+  fail: "/music/fail.mp3",
+  war: "/music/war.mp3",
+  win: "/music/win.mp3"
+};
+const eventSfxPlayers = {};
 let audioCtx = null;
 let sfxUnlocked = false;
 let lastExplosionSfxAt = 0;
@@ -314,6 +329,7 @@ applyTheme(loadTheme());
 connect();
 bindUi();
 loadMusicPlaylist();
+preloadEventSfx();
 registerServiceWorker();
 setInterval(updateLivePanels, 1000);
 
@@ -378,6 +394,14 @@ function stopHeartbeat() {
 function bindUi() {
   els.joinForm.addEventListener("submit", (event) => {
     event.preventDefault();
+    const steps = visibleLobbyFormSteps();
+    if (lobbyFormStep !== steps[steps.length - 1]) {
+      if (validateLobbyFormStep(lobbyFormStep)) {
+        lobbyFormStep = steps[Math.min(steps.length - 1, steps.indexOf(lobbyFormStep) + 1)];
+        renderLobby();
+      }
+      return;
+    }
     if (!selectedColor) {
       showToast("Выбери цвет.");
       return;
@@ -409,6 +433,7 @@ function bindUi() {
     button.addEventListener("click", () => {
       lobbyMode = button.dataset.lobbyMode || "create";
       lobbyStep = "form";
+      lobbyFormStep = "room";
       renderLobby();
     });
   });
@@ -417,8 +442,9 @@ function bindUi() {
     button.addEventListener("click", () => {
       lobbyMode = button.dataset.lobbyStart || "create";
       lobbyStep = "form";
+      lobbyFormStep = "room";
       renderLobby();
-      requestAnimationFrame(() => els.countryInput?.focus?.());
+      requestAnimationFrame(() => (lobbyMode === "enter" ? els.lobbyCodeInput : els.lobbyPlayerCountInput)?.focus?.());
     });
   });
 
@@ -428,7 +454,48 @@ function bindUi() {
       return;
     }
     lobbyStep = "home";
+    lobbyFormStep = "room";
     renderLobby();
+  });
+
+  els.lobbyStepButtons?.forEach((button) => {
+    button.addEventListener("click", () => {
+      const step = button.dataset.lobbyStep || "room";
+      if (!visibleLobbyFormSteps().includes(step)) return;
+      lobbyFormStep = step;
+      renderLobby();
+    });
+  });
+
+  els.lobbyPrevStep?.addEventListener("click", () => {
+    const steps = visibleLobbyFormSteps();
+    const index = steps.indexOf(lobbyFormStep);
+    if (index <= 0) {
+      lobbyStep = "home";
+      lobbyFormStep = "room";
+    } else {
+      lobbyFormStep = steps[index - 1];
+    }
+    renderLobby();
+  });
+
+  els.lobbyNextStep?.addEventListener("click", () => {
+    if (!validateLobbyFormStep(lobbyFormStep)) return;
+    const steps = visibleLobbyFormSteps();
+    const index = steps.indexOf(lobbyFormStep);
+    if (index >= steps.length - 1) {
+      els.joinForm?.requestSubmit?.();
+      return;
+    }
+    lobbyFormStep = steps[index + 1];
+    renderLobby();
+  });
+
+  els.lobbyPlayerCountInput?.addEventListener("input", () => {
+    lobbySettings = readLobbySettings();
+    renderLobbyMode();
+    renderLobbyPlayerSlots();
+    renderLobbyNotice();
   });
 
   els.colorPalette.addEventListener("click", (event) => {
@@ -622,6 +689,9 @@ function handleServerMessage(message) {
     spectator = message.spectator;
     if (message.music) {
       musicPlaylist = Array.isArray(message.music) && message.music.length ? message.music : [message.music].filter(Boolean);
+    }
+    if (message.sfx) {
+      updateEventSfxSources(message.sfx);
     }
   }
 
@@ -920,25 +990,78 @@ function renderLobby() {
 
   renderLobbyMode();
   renderLobbySettings();
+  renderLobbyPlayerSlots();
   renderLobbyNotice();
 }
 
 function renderLobbyMode() {
   const onHome = lobbyStep === "home";
+  const steps = visibleLobbyFormSteps();
+  if (!steps.includes(lobbyFormStep)) lobbyFormStep = steps[0] || "room";
   els.lobbyHome?.classList.toggle("hidden", !onHome);
   els.joinForm?.classList.toggle("hidden", onHome);
   els.lobbyBack?.classList.toggle("hidden", onHome);
+  els.lobbySteps?.classList.toggle("hidden", onHome);
   document.querySelector(".lobby-mode")?.classList.toggle("hidden", onHome);
   els.lobbyModeButtons?.forEach((button) => {
     button.classList.toggle("is-active", button.dataset.lobbyMode === lobbyMode);
   });
+  els.lobbyStepButtons?.forEach((button) => {
+    const step = button.dataset.lobbyStep || "room";
+    button.classList.toggle("hidden", !steps.includes(step));
+    button.classList.toggle("is-active", step === lobbyFormStep);
+  });
+  els.lobbySections?.forEach((section) => {
+    section.classList.toggle("hidden", section.dataset.lobbySection !== lobbyFormStep);
+  });
   els.lobbyCodeField?.classList.toggle("hidden", lobbyMode !== "enter");
-  els.lobbySettings?.classList.toggle("hidden", lobbyMode !== "create");
-  if (els.lobbySubmit) {
-    els.lobbySubmit.textContent = lobbyMode === "enter"
-      ? "Войти и начать"
-      : (lobby?.created && lobby.hostId === me ? "Обновить лобби" : "Создать лобби");
+  els.lobbyPlayerCountField?.classList.toggle("hidden", lobbyMode !== "create");
+  if (els.lobbyPlayerCountInput) {
+    const settings = currentLobbySettings();
+    els.lobbyPlayerCountInput.min = String(lobby?.minHumans || 1);
+    els.lobbyPlayerCountInput.max = String(lobby?.maxHumanLimit || 7);
+    if (String(els.lobbyPlayerCountInput.value) !== String(settings.maxHumans || 2)) {
+      els.lobbyPlayerCountInput.value = String(settings.maxHumans || 2);
+    }
   }
+  const lastStep = steps[steps.length - 1];
+  els.lobbyPrevStep?.classList.toggle("hidden", onHome);
+  els.lobbyNextStep?.classList.toggle("hidden", onHome || lobbyFormStep === lastStep);
+  if (els.lobbySubmit) {
+    els.lobbySubmit.classList.toggle("hidden", onHome || lobbyFormStep !== lastStep);
+    els.lobbySubmit.textContent = lobbyMode === "enter"
+      ? "Войти"
+      : ((currentLobbySettings().maxHumans || 2) === 1 ? "Начать с ботами" : (lobby?.created && lobby.hostId === me ? "Обновить комнату" : "Создать комнату"));
+  }
+}
+
+function visibleLobbyFormSteps() {
+  return lobbyMode === "create" ? ["room", "country", "rules"] : ["room", "country"];
+}
+
+function validateLobbyFormStep(step) {
+  if (step === "room") {
+    if (lobbyMode === "enter") {
+      const code = (els.lobbyCodeInput?.value || "").trim();
+      if (!/^[0-9]{4}$/.test(code)) {
+        showToast("Введи 4 цифры кода лобби.");
+        return false;
+      }
+    } else {
+      const count = Number(els.lobbyPlayerCountInput?.value);
+      if (!Number.isFinite(count) || count < 1 || count > 7) {
+        showToast("Игроков должно быть от 1 до 7.");
+        return false;
+      }
+    }
+  }
+  if (step === "country") {
+    if (!selectedColor) {
+      showToast("Выбери цвет.");
+      return false;
+    }
+  }
+  return true;
 }
 
 function renderLobbySettings() {
@@ -979,15 +1102,42 @@ function renderLobbySettings() {
   `;
 }
 
+function renderLobbyPlayerSlots() {
+  if (!els.lobbyPlayerSlots) return;
+  const settings = currentLobbySettings();
+  const maxHumans = clamp(Math.round(Number(settings.maxHumans) || 2), lobby?.minHumans || 1, lobby?.maxHumanLimit || 7);
+  const playerEntries = Object.entries(lobby?.players || {})
+    .filter(([id]) => /^p\d+$/.test(id))
+    .sort(([a], [b]) => Number(a.slice(1)) - Number(b.slice(1)))
+    .slice(0, maxHumans);
+
+  els.lobbyPlayerSlots.innerHTML = playerEntries.map(([id, player], index) => {
+    const joined = Boolean(player?.joined);
+    const color = player?.colorValue || "#9ca3af";
+    const name = joined ? player.country || `Игрок ${index + 1}` : `Игрок ${index + 1}`;
+    const status = joined ? (player.connected ? "готов" : "нет связи") : "ожидается";
+    return `
+      <div class="lobby-slot">
+        <span class="lobby-slot__dot" style="--swatch:${escapeHtml(color)}"></span>
+        <span>${escapeHtml(name)}</span>
+        <span class="lobby-slot__status">${escapeHtml(status)}</span>
+      </div>
+    `;
+  }).join("");
+}
+
 function renderLobbyNotice() {
   if (!els.lobbyNotice) return;
   const myPlayer = lobby.players?.[me];
+  const settings = currentLobbySettings();
+  const joinedCount = Object.values(lobby.players || {}).filter((player) => player?.joined && !player.isBot).length;
+  const maxHumans = settings.maxHumans || lobby.maxHumans || 2;
   if (lobbyStep === "home") {
     els.lobbyNotice.innerHTML = `<strong>Выбери режим</strong><span>Создай комнату или войди по коду друга.</span>`;
     return;
   }
   if (lobby.created && lobby.hostId === me && lobby.code) {
-    els.lobbyNotice.innerHTML = `<strong>Код лобби: ${escapeHtml(lobby.code)}</strong><span>Передай этот код второму игроку. Матч стартует после входа.</span>`;
+    els.lobbyNotice.innerHTML = `<strong>Код лобби: ${escapeHtml(lobby.code)}</strong><span>Игроки: ${joinedCount}/${maxHumans}. Матч стартует автоматически.</span>`;
     return;
   }
   if (lobby.created && !myPlayer?.joined) {
@@ -995,7 +1145,7 @@ function renderLobbyNotice() {
     return;
   }
   if (myPlayer?.joined) {
-    els.lobbyNotice.innerHTML = `<strong>Готово</strong><span>Ожидаем второго игрока.</span>`;
+    els.lobbyNotice.innerHTML = `<strong>Готово</strong><span>Игроки: ${joinedCount}/${maxHumans}. Ждем остальных.</span>`;
     return;
   }
   els.lobbyNotice.innerHTML = `<strong>Создай матч</strong><span>Настройки уже заполнены стандартными значениями.</span>`;
@@ -1009,6 +1159,7 @@ function currentLobbySettings() {
 function normalizeLobbySettings(raw = {}) {
   raw = raw || {};
   const settings = {
+    maxHumans: clamp(Math.round(Number(raw.maxHumans) || 2), lobby?.minHumans || 1, lobby?.maxHumanLimit || 7),
     bots: {},
     randomEvents: raw.randomEvents !== false,
     incomeMultipliers: {}
@@ -1025,6 +1176,10 @@ function normalizeLobbySettings(raw = {}) {
 
 function readLobbySettings() {
   const settings = normalizeLobbySettings(lobbySettings || lobby?.settings);
+  const maxHumans = Number(els.lobbyPlayerCountInput?.value);
+  if (Number.isFinite(maxHumans)) {
+    settings.maxHumans = clamp(Math.round(maxHumans), lobby?.minHumans || 1, lobby?.maxHumanLimit || 7);
+  }
   els.lobbySettings?.querySelectorAll("[data-lobby-bot]").forEach((input) => {
     settings.bots[input.dataset.lobbyBot] = input.checked;
   });
@@ -2965,7 +3120,8 @@ function centerHomeOnce(force = false) {
     if (!wrap) return;
     const homeCell = findHomeCell();
     if (!homeCell) {
-      wrap.scrollLeft = me === "p2" ? els.map.scrollWidth : 0;
+      wrap.scrollLeft = Math.max(0, (els.map.scrollWidth - wrap.clientWidth) / 2);
+      wrap.scrollTop = Math.max(0, (els.map.scrollHeight - wrap.clientHeight) / 2);
       return;
     }
     const width = state.width || 34;
@@ -3210,6 +3366,11 @@ function unlockSfxAudio() {
 }
 
 function playSfx(name, detail = {}) {
+  if (eventSfxSources[name]) {
+    playEventSfx(name);
+    return;
+  }
+
   const ctx = getSfxContext();
   if (!ctx || !sfxUnlocked) return;
   if (ctx.state === "suspended") {
@@ -3224,6 +3385,41 @@ function playSfx(name, detail = {}) {
   if (name === "misfire") playMisfireSfx(ctx);
   if (name === "explosion") playExplosionSfx(ctx, detail.size);
   if (name === "nuke") playNukeSfx(ctx);
+}
+
+function updateEventSfxSources(sfx = {}) {
+  eventSfxSources = {
+    ...eventSfxSources,
+    ...Object.fromEntries(Object.entries(sfx).filter(([, src]) => typeof src === "string" && src))
+  };
+  preloadEventSfx();
+}
+
+function preloadEventSfx() {
+  for (const [name, src] of Object.entries(eventSfxSources)) {
+    if (!src) continue;
+    if (!eventSfxPlayers[name] || eventSfxPlayers[name].dataset.src !== src) {
+      const audio = new Audio(src);
+      audio.preload = "auto";
+      audio.volume = 0.68;
+      audio.dataset.src = src;
+      eventSfxPlayers[name] = audio;
+      audio.load();
+    }
+    fetch(src, { cache: "force-cache" }).catch(() => {});
+  }
+}
+
+function playEventSfx(name) {
+  if (!sfxUnlocked) return;
+  const src = eventSfxSources[name];
+  if (!src) return;
+  const audio = eventSfxPlayers[name] || new Audio(src);
+  eventSfxPlayers[name] = audio;
+  audio.pause();
+  audio.currentTime = 0;
+  audio.volume = name === "win" ? 0.78 : 0.68;
+  audio.play().catch(() => {});
 }
 
 function playExplosionBatch(batch = []) {
@@ -3451,6 +3647,9 @@ function loadMusicPlaylist() {
           loadCurrentMusicTrack();
           music.play().catch(() => {});
         }
+      }
+      if (data?.sfx) {
+        updateEventSfxSources(data.sfx);
       }
     })
     .catch(() => {});

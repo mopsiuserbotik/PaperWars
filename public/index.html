@@ -41,23 +41,46 @@
             <button class="lobby-mode__button" data-lobby-mode="enter" type="button">Войти</button>
           </div>
 
+          <div id="lobbySteps" class="lobby-steps hidden" aria-label="Шаги лобби">
+            <button class="lobby-step is-active" data-lobby-step="room" type="button">Комната</button>
+            <button class="lobby-step" data-lobby-step="country" type="button">Страна</button>
+            <button class="lobby-step" data-lobby-step="rules" type="button">Правила</button>
+          </div>
+
           <form id="joinForm" class="join">
-            <label class="field">
-              <span>Страна</span>
-              <input id="countryInput" maxlength="22" autocomplete="off" placeholder="Например, Бумажная Республика">
-            </label>
+            <section class="lobby-form-section" data-lobby-section="room">
+              <label id="lobbyPlayerCountField" class="field">
+                <span>Игроков</span>
+                <input id="lobbyPlayerCountInput" type="number" inputmode="numeric" min="1" max="7" step="1" value="2">
+              </label>
 
-            <div class="palette" id="colorPalette" aria-label="Выбор цвета"></div>
-            <div id="ideologyPanel" class="ideology-panel"></div>
+              <label id="lobbyCodeField" class="field hidden">
+                <span>Код лобби</span>
+                <input id="lobbyCodeInput" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="0000">
+              </label>
 
-            <label id="lobbyCodeField" class="field hidden">
-              <span>Код лобби</span>
-              <input id="lobbyCodeInput" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="0000">
-            </label>
+              <div id="lobbyPlayerSlots" class="lobby-player-slots"></div>
+            </section>
 
-            <div id="lobbySettings" class="lobby-settings"></div>
+            <section class="lobby-form-section hidden" data-lobby-section="country">
+              <label class="field">
+                <span>Страна</span>
+                <input id="countryInput" maxlength="22" autocomplete="off" placeholder="Например, Бумажная Республика">
+              </label>
 
-            <button id="lobbySubmit" class="primary" type="submit">Создать лобби</button>
+              <div class="palette" id="colorPalette" aria-label="Выбор цвета"></div>
+              <div id="ideologyPanel" class="ideology-panel"></div>
+            </section>
+
+            <section class="lobby-form-section hidden" data-lobby-section="rules">
+              <div id="lobbySettings" class="lobby-settings"></div>
+            </section>
+
+            <div class="lobby-form-actions">
+              <button id="lobbyPrevStep" class="secondary" type="button">Назад</button>
+              <button id="lobbyNextStep" class="primary" type="button">Дальше</button>
+              <button id="lobbySubmit" class="primary hidden" type="submit">Создать лобби</button>
+            </div>
           </form>
 
           <div id="lobbyNotice" class="lobby-notice"></div>

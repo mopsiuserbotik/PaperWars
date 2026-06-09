@@ -213,6 +213,84 @@ h1 {
   color: #fff;
 }
 
+.lobby-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.lobby-step {
+  min-height: 34px;
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--button);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.lobby-step.is-active {
+  background: #202020;
+  color: #fff;
+}
+
+.lobby-form-section {
+  display: grid;
+  gap: 12px;
+}
+
+.lobby-form-actions {
+  display: grid;
+  grid-template-columns: 0.72fr 1fr;
+  gap: 8px;
+}
+
+.lobby-form-actions .primary:last-child {
+  grid-column: 2;
+}
+
+.secondary {
+  min-height: var(--tap);
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--button);
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.lobby-player-slots {
+  display: grid;
+  gap: 7px;
+}
+
+.lobby-slot {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--button);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.lobby-slot__dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--swatch, var(--muted));
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
+.lobby-slot__status {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .field {
   display: grid;
   gap: 6px;

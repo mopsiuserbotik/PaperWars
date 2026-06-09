@@ -10,9 +10,16 @@ const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const MUSIC_DIR = path.join(ROOT, "server", "music");
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-const HUMAN_IDS = ["p1", "p2"];
+const MIN_HUMAN_PLAYERS = 1;
+const MAX_HUMAN_PLAYERS = 7;
+const HUMAN_IDS = Array.from({ length: MAX_HUMAN_PLAYERS }, (_, index) => `p${index + 1}`);
 const BOT_IDS = ["farmers", "anarchists", "mechanics", "rivermen"];
 const PLAYER_IDS = [...HUMAN_IDS, ...BOT_IDS];
+const EVENT_SFX_FILES = {
+  fail: "fail.mp3",
+  war: "war.mp3",
+  win: "win.mp3"
+};
 const BOT_PROFILES = {
   farmers:   { country: "Фермеры",   color: "farmers",   colorValue: "#19c9c2", personality: "passive" },
   anarchists:{ country: "Анархисты", color: "anarchists",colorValue: "#2f3437", personality: "aggressive" },
@@ -156,7 +163,8 @@ const COLOR_OPTIONS = [
   { id: "green", name: "Зеленый", value: "#2eaa64" },
   { id: "violet", name: "Фиолетовый", value: "#8b5cf6" },
   { id: "gray", name: "Серый", value: "#6b7280" },
-  { id: "orange", name: "Оранжевый", value: "#f97316" }
+  { id: "orange", name: "Оранжевый", value: "#f97316" },
+  { id: "cyan", name: "Бирюзовый", value: "#06b6d4" }
 ];
 
 const BUILDINGS = {
@@ -340,7 +348,11 @@ function serveHttp(req, res) {
 
   if (url.pathname === "/api/music") {
     const files = getMusicFiles();
-    sendJson(res, { files, playlist: files.map((file) => `/music/${encodeURIComponent(file)}`) });
+    sendJson(res, {
+      files,
+      playlist: getMusicPlaylist(),
+      sfx: getEventSfxPaths()
+    });
     return;
   }
 
@@ -460,7 +472,17 @@ function getMusicFiles() {
 }
 
 function getMusicPlaylist() {
-  return getMusicFiles().map((file) => `/music/${encodeURIComponent(file)}`);
+  const eventFiles = new Set(Object.values(EVENT_SFX_FILES).map((file) => file.toLowerCase()));
+  return getMusicFiles()
+    .filter((file) => !eventFiles.has(file.toLowerCase()))
+    .map((file) => `/music/${encodeURIComponent(file)}`);
+}
+
+function getEventSfxPaths() {
+  return Object.fromEntries(Object.entries(EVENT_SFX_FILES).map(([name, file]) => [
+    name,
+    `/music/${encodeURIComponent(file)}`
+  ]));
 }
 
 function createGameRoom() {
@@ -506,6 +528,9 @@ function emptyLobbyPayload() {
     settings: defaultLobbySettings(),
     bots: botLobbyPayload(),
     players: Object.fromEntries(HUMAN_IDS.map((id) => [id, null])),
+    maxHumans: defaultLobbySettings().maxHumans,
+    minHumans: MIN_HUMAN_PLAYERS,
+    maxHumanLimit: MAX_HUMAN_PLAYERS,
     colors: COLOR_OPTIONS
   };
 }
@@ -540,6 +565,26 @@ function findRoomByPlayerToken(token) {
   ) || null;
 }
 
+function humanSlotsForRoom(room = game) {
+  const maxHumans = sanitizeHumanCount(room?.settings?.maxHumans);
+  return HUMAN_IDS.slice(0, maxHumans);
+}
+
+function joinedHumanIds(room = game) {
+  return humanSlotsForRoom(room).filter((id) => room?.players[id]?.joined);
+}
+
+function connectedJoinedHumanIds(room = game) {
+  return joinedHumanIds(room).filter((id) => room.players[id]?.connected);
+}
+
+function lobbyReadyToStart(room = game) {
+  const slots = humanSlotsForRoom(room);
+  return slots.length > 0 &&
+    joinedHumanIds(room).length >= slots.length &&
+    connectedJoinedHumanIds(room).length >= slots.length;
+}
+
 function sendHello(client) {
   send(client, {
     type: "hello",
@@ -548,7 +593,8 @@ function sendHello(client) {
     colors: COLOR_OPTIONS,
     width: WIDTH,
     height: HEIGHT,
-    music: getMusicPlaylist()
+    music: getMusicPlaylist(),
+    sfx: getEventSfxPaths()
   });
 }
 
@@ -594,7 +640,7 @@ function attachWebSocket(socket, req) {
   const joinedRoom = clientGame(client);
   if (joinedRoom) {
     withGame(joinedRoom, () => {
-      if (game.status === "lobby" && game.players.p1?.joined && game.players.p2?.joined && game.players.p1.connected && game.players.p2.connected) {
+      if (game.status === "lobby" && lobbyReadyToStart(game)) {
         startGame();
       }
     });
@@ -646,13 +692,14 @@ function disconnectDuplicateTokenClients(token) {
 function assignPlayerSlot(room, preferredSlot = null, token = "", ip = "") {
   if (!room) return null;
   const activeHuman = (id) => clientsForGame(room).some((client) => client.playerId === id);
-  const canUseSlot = (id) => HUMAN_IDS.includes(id) && !activeHuman(id);
+  const allowedSlots = humanSlotsForRoom(room);
+  const canUseSlot = (id) => allowedSlots.includes(id) && !activeHuman(id);
 
   if (preferredSlot && canUseSlot(preferredSlot)) {
     return preferredSlot;
   }
 
-  for (const id of HUMAN_IDS) {
+  for (const id of allowedSlots) {
     const player = room.players[id];
     if (!player?.joined || !canUseSlot(id)) continue;
     if (token && player.token === token) {
@@ -660,7 +707,7 @@ function assignPlayerSlot(room, preferredSlot = null, token = "", ip = "") {
     }
   }
 
-  for (const id of HUMAN_IDS) {
+  for (const id of allowedSlots) {
     const player = room.players[id];
     if (!canUseSlot(id)) continue;
     if (!player?.joined) return id;
@@ -1110,7 +1157,7 @@ function handleJoin(client, message) {
       return;
     }
 
-    const country = cleanText(message.country, 22) || (playerId === "p1" ? "Страна 1" : "Страна 2");
+    const country = cleanText(message.country, 22) || `Страна ${HUMAN_IDS.indexOf(playerId) + 1 || 1}`;
     const colorId = cleanText(message.color, 20);
     const requestedIdeology = cleanText(message.ideology, 30);
     const ideologyId = IDEOLOGIES[requestedIdeology] && !IDEOLOGIES[requestedIdeology].botOnly ? requestedIdeology : "democracy";
@@ -1147,13 +1194,15 @@ function handleJoin(client, message) {
       game.lobbyCreated = true;
       game.lobbyHostId = playerId;
       game.lobbyCode = game.lobbyCode || uniqueLobbyCode();
-      game.settings = sanitizeLobbySettings(message.settings);
+      const nextSettings = sanitizeLobbySettings(message.settings);
+      nextSettings.maxHumans = clamp(nextSettings.maxHumans, Math.max(MIN_HUMAN_PLAYERS, joinedHumanIds(game).length), MAX_HUMAN_PLAYERS);
+      game.settings = nextSettings;
     }
 
     sendHello(client);
     broadcastLobby();
 
-    if (game.players.p1?.joined && game.players.p2?.joined && game.players.p1.connected && game.players.p2.connected) {
+    if (lobbyReadyToStart(game)) {
       startGame();
     }
   });
@@ -1213,7 +1262,8 @@ function addSystemEvent(text, options = {}) {
 
 function handleLeaveRoom(client) {
   const player = client.playerId ? game.players[client.playerId] : null;
-  const country = cleanText(player?.country || "", 40) || (client.playerId === "p2" ? "Игрок 2" : "Игрок 1");
+  const slotNumber = Math.max(1, HUMAN_IDS.indexOf(client.playerId) + 1);
+  const country = cleanText(player?.country || "", 40) || `Игрок ${slotNumber}`;
   closeCurrentRoom(`${country} вышел. Комната удалена.`);
 }
 
@@ -1297,16 +1347,25 @@ function handleContinueWithBots(client) {
 
 function defaultLobbySettings() {
   return {
+    maxHumans: 2,
     bots: Object.fromEntries(BOT_IDS.map((id) => [id, true])),
     randomEvents: true,
     incomeMultipliers: { ...LOBBY_INCOME_DEFAULTS }
   };
 }
 
+function sanitizeHumanCount(value) {
+  const number = Number(value);
+  return Number.isFinite(number)
+    ? clamp(Math.round(number), MIN_HUMAN_PLAYERS, MAX_HUMAN_PLAYERS)
+    : 2;
+}
+
 function sanitizeLobbySettings(raw = {}) {
   raw = raw || {};
   const defaults = defaultLobbySettings();
   const settings = {
+    maxHumans: sanitizeHumanCount(raw.maxHumans ?? defaults.maxHumans),
     bots: { ...defaults.bots },
     randomEvents: raw.randomEvents !== false,
     incomeMultipliers: { ...defaults.incomeMultipliers }
@@ -2614,7 +2673,7 @@ function declareWar(fromId, toId) {
   game.ultimatums = game.ultimatums.filter((item) => !samePair(item.from, item.to, fromId, toId));
   game.resourceRequests = game.resourceRequests.filter((request) => !samePair(request.from, request.to, fromId, toId));
   cancelSupportBetween(fromId, toId);
-  addSystemEvent(`${game.players[fromId].country} объявляет войну стране ${game.players[toId].country}!`, { sound: "alert" });
+  addSystemEvent(`${game.players[fromId].country} объявляет войну стране ${game.players[toId].country}!`, { sound: "war" });
   botSayPhrase(fromId, "war");
 }
 
@@ -3691,14 +3750,36 @@ function generateMap() {
 }
 
 function startingLayouts() {
-  return {
-    p1:         { x: 2,  y: 12, x0: 1,  x1: 3,  y0: 11, y1: 13 },
-    p2:         { x: 31, y: 11, x0: 30, x1: 32, y0: 10, y1: 12 },
-    farmers:    { x: 7,  y: 3,  x0: 6,  x1: 8,  y0: 2,  y1: 4  },
-    rivermen:   { x: 26, y: 3,  x0: 25, x1: 27, y0: 2,  y1: 4  },
-    mechanics:  { x: 7,  y: 20, x0: 6,  x1: 8,  y0: 19, y1: 21 },
-    anarchists: { x: 26, y: 20, x0: 25, x1: 27, y0: 19, y1: 21 }
-  };
+  const ids = activeLayoutPlayerIds();
+  const layouts = {};
+  const cx = (WIDTH - 1) / 2;
+  const cy = (HEIGHT - 1) / 2;
+  const radiusX = Math.max(6, WIDTH / 2 - 4);
+  const radiusY = Math.max(5, HEIGHT / 2 - 4);
+  const count = Math.max(1, ids.length);
+
+  ids.forEach((playerId, index) => {
+    const angle = Math.PI + (index * Math.PI * 2) / count;
+    const x = clamp(Math.round(cx + Math.cos(angle) * radiusX), 2, WIDTH - 3);
+    const y = clamp(Math.round(cy + Math.sin(angle) * radiusY), 2, HEIGHT - 3);
+    layouts[playerId] = {
+      x,
+      y,
+      x0: clamp(x - 1, 0, WIDTH - 1),
+      x1: clamp(x + 1, 0, WIDTH - 1),
+      y0: clamp(y - 1, 0, HEIGHT - 1),
+      y1: clamp(y + 1, 0, HEIGHT - 1)
+    };
+  });
+
+  return layouts;
+}
+
+function activeLayoutPlayerIds() {
+  const humans = joinedHumanIds(game);
+  const bots = activeBotIds();
+  const ids = [...humans, ...bots].filter((id) => PLAYER_IDS.includes(id));
+  return ids.length ? ids : ["p1"];
 }
 
 function placeStartingBases() {
@@ -3724,9 +3805,9 @@ function placeStartingBases() {
 }
 
 function placeStarterFarms(playerId, start) {
-  const offsets = playerId === "p1"
-    ? [[1, 0], [0, -1]]
-    : [[-1, 0], [0, 1]];
+  const dx = start.x < WIDTH / 2 ? 1 : -1;
+  const dy = start.y < HEIGHT / 2 ? 1 : -1;
+  const offsets = [[dx, 0], [0, dy]];
   for (const [dx, dy] of offsets) {
     const cell = getCell(start.x + dx, start.y + dy);
     if (cell?.owner === playerId && !cell.building && cell.terrain === "land") {
@@ -6511,6 +6592,9 @@ function lobbyPayloadFor(client = null) {
     settings: room.settings || defaultLobbySettings(),
     bots: botLobbyPayload(),
     players,
+    maxHumans: sanitizeHumanCount((room.settings || defaultLobbySettings()).maxHumans),
+    minHumans: MIN_HUMAN_PLAYERS,
+    maxHumanLimit: MAX_HUMAN_PLAYERS,
     colors: COLOR_OPTIONS
   };
 }
@@ -6891,40 +6975,36 @@ function checkVictory() {
   const now = Date.now();
   markExpiredDefeats(now);
 
-  if (game.continuedWithBots) {
-    const winnerId = game.continueWinnerId;
-    if (!winnerId || isDefeated(winnerId) || computeStats(winnerId).cells <= 0) {
-      const botWinner = activeBotIds().find((id) => !isDefeated(id) && computeStats(id).cells > 0) || "anarchists";
-      endGame(botWinner, "Боты добили последнюю страну игрока.");
-      return;
+  for (const playerId of PLAYER_IDS) {
+    const player = game.players[playerId];
+    if (!player) continue;
+    if (!player.defeated && computeStats(playerId).cells <= 0) {
+      markPlayerDefeated(playerId);
     }
-    const botsAlive = activeBotIds().some((id) => !isDefeated(id) && computeStats(id).cells > 0);
-    if (!botsAlive) {
-      endGame(winnerId, "Все боты побеждены.");
-      return;
+  }
+
+  const contenders = activeContenderIds();
+  const targetHumanCount = sanitizeHumanCount(game.settings?.maxHumans);
+  if (game.continuedWithBots || targetHumanCount <= 1) {
+    if (contenders.length === 1) {
+      endGame(contenders[0], `${game.players[contenders[0]]?.country || "Победитель"} осталась последней страной.`);
     }
     return;
   }
 
-  for (const playerId of HUMAN_IDS) {
-    const player = game.players[playerId];
-    if (!player) continue;
-    if (player.defeated) {
-      endGame(humanOpponent(playerId), `${player.country} не восстановила штаб за 100 секунд.`);
-      return;
-    }
-  }
-
-  for (const playerId of HUMAN_IDS) {
-    if (computeStats(playerId).cells <= 0) {
-      markPlayerDefeated(playerId);
-      endGame(humanOpponent(playerId), `${game.players[playerId].country} потеряла все клетки.`);
-      return;
-    }
+  const humanContenders = joinedHumanIds(game).filter((id) => {
+    const player = game.players[id];
+    return player && !player.defeated && computeStats(id).cells > 0;
+  });
+  if (humanContenders.length === 1) {
+    endGame(humanContenders[0], `${game.players[humanContenders[0]]?.country || "Победитель"} осталась последней страной игрока.`);
+  } else if (humanContenders.length === 0 && contenders.length) {
+    endGame(contenders[0], "Все игроки потеряли свои страны.");
   }
 }
 
 function endGame(winnerId, reason) {
+  if (game.status === "ended") return;
   game.status = "ended";
   game.ended = {
     winnerId,
@@ -6932,8 +7012,16 @@ function endGame(winnerId, reason) {
     reason,
     at: Date.now()
   };
+  addSystemEvent(`${game.ended.winner} победила. ${reason}`, { sound: "win" });
   clearInterval(game.timer);
   game.timer = null;
+}
+
+function activeContenderIds() {
+  return PLAYER_IDS.filter((id) => {
+    const player = game.players[id];
+    return player && player.joined && !player.defeated && computeStats(id).cells > 0;
+  });
 }
 
 function captureCell(playerId, cell) {
@@ -7196,9 +7284,7 @@ function markPlayerDefeated(playerId) {
     cell.units[playerId] = emptyUnits();
     cell.cooldowns[playerId] = emptyWeaponCooldowns();
   });
-  if (player.isBot) {
-    addSystemEvent(`${player.country} выбыла из игры.`, { sound: "alert" });
-  }
+  addSystemEvent(`${player.country} выбыла из игры.`, { sound: "fail" });
   touchMap();
   return true;
 }
@@ -7669,10 +7755,6 @@ function cruiserTargetInLine(from, target) {
   return dist > 0 && dist <= 3 && (dx === 0 || dy === 0);
 }
 
-function humanOpponent(playerId) {
-  return playerId === "p1" ? "p2" : "p1";
-}
-
 function initializeDiplomacy() {
   game.relations = {};
   game.diplomacyOffers = [];
@@ -7681,8 +7763,15 @@ function initializeDiplomacy() {
       setRelation(PLAYER_IDS[i], PLAYER_IDS[j], "neutral");
     }
   }
-  setRelation("p1", "p2", "war");
-  setRelation("anarchists", "farmers", "war");
+  const humans = joinedHumanIds(game);
+  for (let i = 0; i < humans.length; i += 1) {
+    for (let j = i + 1; j < humans.length; j += 1) {
+      setRelation(humans[i], humans[j], "war");
+    }
+  }
+  if (game.players.anarchists && game.players.farmers) {
+    setRelation("anarchists", "farmers", "war");
+  }
 }
 
 function pairKey(a, b) {
