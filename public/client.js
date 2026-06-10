@@ -259,10 +259,14 @@ let reconnectAttempts = 0;
 let heartbeatTimer = null;
 let serverFull = false;
 const SFX_NAMES = [
-  "attack", "drone", "d_house", "d_tehnika", "fail", "kreyser", "money", "osechka", "pvo", "rain", "raketa",
+  "attack", "drone", "drone_run", "d_house", "d_tehnika", "fail", "kreyser", "money", "osechka", "pvo", "rain", "raketa",
   "rpg", "rszo", "rszo_hit", "rszo_shot", "shahed", "soyuz", "stroyka", "tank", "tank_shot", "war", "win", "yaderka"
 ];
 const POSITIONAL_VOLUME_EXEMPT = new Set(["fail", "money", "rain", "soyuz", "war", "win", "yaderka"]);
+const SFX_PLAY_LIMIT_MS = {
+  drone_run: 2000,
+  tank: 2000
+};
 let eventSfxSources = Object.fromEntries(SFX_NAMES.map((name) => [name, `/sfx/${name}.mp3`]));
 const eventSfxPlayers = {};
 let sfxUnlocked = false;
@@ -3612,10 +3616,20 @@ function playEventSfx(name, detail = {}) {
   const overlap = name === "rszo_hit";
   const audio = overlap ? new Audio(src) : (eventSfxPlayers[name] || new Audio(src));
   if (!overlap) eventSfxPlayers[name] = audio;
+  const playToken = `${Date.now()}:${Math.random()}`;
+  audio.dataset.playToken = playToken;
   audio.pause();
   audio.currentTime = 0;
   audio.volume = sfxVolumeFor(name, detail);
   audio.play().catch(() => {});
+  const limit = SFX_PLAY_LIMIT_MS[name] || 0;
+  if (limit > 0) {
+    setTimeout(() => {
+      if (audio.dataset.playToken !== playToken) return;
+      audio.pause();
+      audio.currentTime = 0;
+    }, limit);
+  }
 }
 
 function sfxVolumeFor(name, detail = {}) {
@@ -3626,24 +3640,30 @@ function sfxVolumeFor(name, detail = {}) {
   const y = Number(detail.y);
   if (!Number.isFinite(x) || !Number.isFinite(y) || !state?.width || !state?.height) return baseVolume;
 
-  const center = cameraCenterCell();
-  if (!center) return baseVolume;
+  const view = cameraViewMetrics();
+  if (!view) return baseVolume;
 
-  const distance = Math.hypot(x - center.x, y - center.y);
-  const maxDistance = Math.max(1, Math.hypot(state.width, state.height) * 0.48);
-  const distanceGain = Math.pow(clamp(1 - distance / maxDistance, 0.12, 1), 1.35);
-  const zoomGain = clamp(0.58 + (mapZoom - 0.72) * 0.34, 0.58, 1.28);
-  return clamp(baseVolume * distanceGain * zoomGain, 0.035, 1);
+  const distance = Math.hypot(x - view.x, y - view.y);
+  const audibleRadius = Math.max(1.2, Math.hypot(view.visibleWidth, view.visibleHeight) * 0.62);
+  const distanceGain = Math.pow(clamp(1 - distance / audibleRadius, 0, 1), 2.15);
+  const zoomT = clamp((mapZoom - 0.72) / (2.8 - 0.72), 0, 1);
+  const zoomGain = 0.035 + Math.pow(zoomT, 1.65) * 1.35;
+  return clamp(baseVolume * distanceGain * zoomGain, 0, 1);
 }
 
-function cameraCenterCell() {
+function cameraViewMetrics() {
   const wrap = els.map?.parentElement;
-  if (!wrap || !els.map?.scrollWidth || !els.map?.scrollHeight || !state?.width || !state?.height) return null;
-  const x = (wrap.scrollLeft + wrap.clientWidth / 2) / els.map.scrollWidth * state.width - 0.5;
-  const y = (wrap.scrollTop + wrap.clientHeight / 2) / els.map.scrollHeight * state.height - 0.5;
+  if (!wrap || !state?.width || !state?.height) return null;
+  const wrapRect = wrap.getBoundingClientRect();
+  const mapRect = els.map.getBoundingClientRect();
+  if (!mapRect.width || !mapRect.height) return null;
+  const x = ((wrapRect.left + wrapRect.width / 2 - mapRect.left) / mapRect.width) * state.width - 0.5;
+  const y = ((wrapRect.top + wrapRect.height / 2 - mapRect.top) / mapRect.height) * state.height - 0.5;
   return {
     x: clamp(x, 0, state.width - 1),
-    y: clamp(y, 0, state.height - 1)
+    y: clamp(y, 0, state.height - 1),
+    visibleWidth: clamp((wrapRect.width / mapRect.width) * state.width, 1, state.width),
+    visibleHeight: clamp((wrapRect.height / mapRect.height) * state.height, 1, state.height)
   };
 }
 

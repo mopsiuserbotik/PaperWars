@@ -80,6 +80,7 @@ const RANDOM_EVENT_CHANCE = 0.4;
 const CONSTRUCTION_MS = 1_500;
 const SHAHED_FLIGHT_MS = 17_040;
 const NUKE_FLIGHT_MS = 2_400;
+const ROCKET_FLIGHT_MS = 1_050;
 const SHAHED_ACTION_THROTTLE_MS = 900;
 const EPIDEMIC_TICK_MS = 12_000;
 const EPIDEMIC_HOSPITALS_REQUIRED = 3;
@@ -2838,6 +2839,7 @@ function cancelSupportBetween(a, b) {
 
 function emitMovementSfx(moved, cell, playerId) {
   if (!cell) return;
+  if ((moved.drone || 0) > 0) emitSfx("drone_run", cell.x, cell.y, { playerId });
   if ((moved.tank || 0) > 0) emitSfx("tank", cell.x, cell.y, { playerId });
   if ((moved.mlrs || 0) > 0) emitSfx("rszo", cell.x, cell.y, { playerId });
 }
@@ -2908,6 +2910,7 @@ function handleMove(client, message) {
       return;
     }
     addUnits(unitsFor(to, playerId), moved);
+    emitMovementSfx(moved, to, playerId);
     touchMap();
     send(client, { type: "moveResult", from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y } });
     broadcastState();
@@ -3301,16 +3304,38 @@ function handleRocketStrike(client, message) {
     return;
   }
 
-  const blocker = findHostileAirDefense(playerId, target.x, target.y, 4);
-  setWeaponCooldown(from, player, playerId, "rocket");
-  emitSfx("shot", from.x, from.y, { weapon: "rocket", playerId });
+  launchRocketStrike(playerId, from, target, client);
+}
 
+function launchRocketStrike(playerId, from, target, client = null) {
+  const player = game.players[playerId];
+  if (!player || !from || !target) return false;
+  setWeaponCooldown(from, player, playerId, "rocket");
+  emitFlight("rocket", from, target, ROCKET_FLIGHT_MS, { playerId });
+  emitSfx("raketa", target.x, target.y, { playerId });
+  touchMap();
+  broadcastState();
+
+  const room = game;
+  const tx = target.x;
+  const ty = target.y;
+  const timer = setTimeout(() => withGame(room, () => resolveRocketImpact(playerId, tx, ty, client)), ROCKET_FLIGHT_MS);
+  timer.unref?.();
+  return true;
+}
+
+function resolveRocketImpact(playerId, tx, ty, client = null) {
+  if (!game || game.ended) return;
+  const target = getCell(tx, ty);
+  if (!target) return;
+
+  const blocker = findHostileAirDefense(playerId, target.x, target.y, 4);
   if (blocker) {
     emitExplosions([{ x: target.x, y: target.y, kind: "intercept" }, { x: blocker.x, y: blocker.y, kind: "aa" }]);
     emitSfx("pvo", blocker.x, blocker.y, { playerId });
-    sendInfo(client, "Ракета перехвачена ПВО.");
+    if (client) sendInfo(client, "Ракета перехвачена ПВО.");
     touchMap();
-    broadcastState();
+    broadcastStateNow();
     return;
   }
 
@@ -3320,13 +3345,12 @@ function handleRocketStrike(client, message) {
   applyArmyLossEffects(lossSnapshot, playerId);
   emitTechDestroyedIfChanged(techBefore, target, playerId);
   pruneWeaponCooldowns(target);
-  emitSfx("raketa", target.x, target.y, { playerId });
   emitExplosions([{ x: target.x, y: target.y, kind: "rocket" }]);
   addSystemEvent(`${game.players[playerId].country} запускает ракету по ${cellTargetName(target, playerId)}.`, { sound: "alert" });
   touchMap();
   recomputePlayerFlags();
   checkVictory();
-  broadcastState();
+  broadcastStateNow();
 }
 
 function maybeMisfire(playerId, cell, weapon) {
@@ -6335,6 +6359,7 @@ function tryBotDrone(playerId) {
     spend(player, { ammo: ammoCost });
     unitsFor(from, playerId).drone -= 1;
     unitsFor(step, playerId).drone += 1;
+    emitSfx("drone_run", step.x, step.y, { playerId });
     touchMap();
     return true;
   }
@@ -6793,22 +6818,7 @@ function tryBotShoot(playerId) {
         if (blocker) continue;
         if (maybeMisfire(playerId, from, "rocket")) return true;
         rememberBotTarget(playerId, "rocket", target);
-        setWeaponCooldown(from, player, playerId, "rocket");
-        emitSfx("shot", from.x, from.y, { weapon: "rocket", playerId });
-        if (blocker) {
-          emitExplosions([{ x: target.x, y: target.y, kind: "intercept" }, { x: blocker.x, y: blocker.y, kind: "aa" }]);
-        } else {
-          const lossSnapshot = armyGoldSnapshot();
-          const techBefore = hostileTechUnitCount(playerId, target);
-          damageRocketCell(playerId, target);
-          applyArmyLossEffects(lossSnapshot, playerId);
-          emitTechDestroyedIfChanged(techBefore, target, playerId);
-          pruneWeaponCooldowns(target);
-          emitSfx("raketa", target.x, target.y, { playerId });
-          emitExplosions([{ x: target.x, y: target.y, kind: "rocket" }]);
-          addSystemEvent(`${player.country} запускает ракету по ${cellTargetName(target, playerId)}.`, { sound: "alert" });
-        }
-        touchMap();
+        launchRocketStrike(playerId, from, target);
         return true;
       }
     }

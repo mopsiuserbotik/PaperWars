@@ -1259,6 +1259,38 @@ h1 {
   transform: rotate(var(--flight-angle, 90deg));
 }
 
+.map-flight--rocket {
+  z-index: 90;
+  width: clamp(22px, 3vw, 40px);
+  height: clamp(22px, 3vw, 40px);
+}
+
+.map-flight--rocket::before {
+  content: "🚀";
+  position: relative;
+  z-index: 2;
+  font-size: clamp(18px, 2.4vw, 32px);
+  transform: rotate(var(--flight-angle, 90deg));
+}
+
+.map-flight--rocket::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 1;
+  width: clamp(10px, 1.4vw, 18px);
+  height: clamp(30px, 4.8vw, 66px);
+  border-radius: 999px;
+  background:
+    radial-gradient(ellipse at 50% 12%, rgba(255, 240, 180, 0.7), transparent 34%),
+    radial-gradient(ellipse at 50% 56%, rgba(92, 94, 92, 0.38), transparent 72%);
+  filter: blur(2px);
+  opacity: 0.72;
+  transform: translate(-50%, -2%) rotate(var(--flight-angle, 90deg)) translateY(36%);
+  transform-origin: 50% 0;
+}
+
 .map-flight--nuke {
   z-index: 92;
   width: clamp(28px, 3.6vw, 48px);
@@ -2031,23 +2063,23 @@ h1 {
   bottom: calc(var(--controls-height) + 12px);
   z-index: 24;
   display: grid;
-  grid-template-columns: repeat(3, 84px);
-  grid-template-rows: repeat(3, 80px);
-  gap: 8px;
+  grid-template-columns: repeat(3, 62px);
+  grid-template-rows: repeat(3, 58px);
+  gap: 4px;
   pointer-events: auto;
 }
 
 .map-move-button {
   display: grid;
-  width: 84px;
-  height: 80px;
+  width: 62px;
+  height: 58px;
   place-items: center;
   border: 1px solid var(--paper-line);
   border-radius: 8px;
   background: var(--panel-solid);
   color: var(--ink);
   box-shadow: var(--soft-shadow);
-  font-size: 36px;
+  font-size: 30px;
   font-weight: 900;
   line-height: 1;
 }
@@ -2581,15 +2613,15 @@ h1 {
   .map-move-pad {
     left: max(8px, env(safe-area-inset-left));
     bottom: calc(var(--controls-height) + 8px);
-    grid-template-columns: repeat(3, 68px);
-    grid-template-rows: repeat(3, 64px);
-    gap: 6px;
+    grid-template-columns: repeat(3, 52px);
+    grid-template-rows: repeat(3, 50px);
+    gap: 4px;
   }
 
   .map-move-button {
-    width: 68px;
-    height: 64px;
-    font-size: 32px;
+    width: 52px;
+    height: 50px;
+    font-size: 26px;
   }
 
   .chat-drawer {
