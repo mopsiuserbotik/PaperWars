@@ -8,17 +8,17 @@ const WIDTH = 34;
 const HEIGHT = 24;
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
-const MUSIC_DIR = path.join(ROOT, "server", "music");
+const SFX_DIR = path.join(ROOT, "server", "sfx");
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MIN_HUMAN_PLAYERS = 1;
 const MAX_HUMAN_PLAYERS = 7;
 const HUMAN_IDS = Array.from({ length: MAX_HUMAN_PLAYERS }, (_, index) => `p${index + 1}`);
 const BOT_IDS = ["farmers", "anarchists", "mechanics", "rivermen"];
 const PLAYER_IDS = [...HUMAN_IDS, ...BOT_IDS];
-const EVENT_SFX_FILES = {
-  fail: "fail.mp3",
-  war: "war.mp3",
-  win: "win.mp3"
+const EVENT_SFX_ALIASES = {
+  demolish: "d_house",
+  misfire: "osechka",
+  nuke: "yaderka"
 };
 const TROLL_CENSOR_MAX_SECONDS = 60;
 const BOT_PROFILES = {
@@ -77,7 +77,10 @@ const DEV_CODE = "6686";
 const RANDOM_EVENT_INTERVAL_MS = 360_000;
 const RANDOM_EVENT_WARNING_MS = 20_000;
 const RANDOM_EVENT_CHANCE = 0.4;
-const CONSTRUCTION_MS = 3_000;
+const CONSTRUCTION_MS = 1_500;
+const SHAHED_FLIGHT_MS = 17_040;
+const NUKE_FLIGHT_MS = 2_400;
+const SHAHED_ACTION_THROTTLE_MS = 900;
 const EPIDEMIC_TICK_MS = 12_000;
 const EPIDEMIC_HOSPITALS_REQUIRED = 3;
 const MISFIRE_CHANCE = 0.15;
@@ -226,7 +229,7 @@ const UNITS = {
   ew: { label: "РЭБ", icon: "📡", cost: { gold: 10, iron: 2 }, power: 0, movable: true, stack: false },
   mlrs: { label: "РСЗО", icon: "🚚", cost: { pop: 3, gold: 70, iron: 28 }, power: 2, movable: true, stack: false },
   drone: { label: "Дрон", icon: "🛸", cost: { gold: 16, iron: 4, ammo: 3 }, power: 0, movable: true, stack: true },
-  saboteur: { label: "Диверсант", icon: "🕵", cost: { pop: 1, gold: 45, iron: 6, ammo: 4 }, power: 0, movable: true, stack: true },
+  saboteur: { label: "Шахед", icon: "🛩", cost: { pop: 1, gold: 45, iron: 6, ammo: 4 }, power: 0, movable: true, stack: true },
   boat: { label: "Лодка", icon: "🚤", cost: { pop: 1, gold: 12, iron: 5 }, power: 0, movable: true, stack: false },
   cruiser: { label: "Крейсер", icon: "🚢", cost: { pop: 2, gold: 55, iron: 24 }, power: 0, movable: true, stack: false }
 };
@@ -247,10 +250,10 @@ const MLRS_INFANTRY_KILL_RATIO = 0.5;
 const MLRS_TECH_HIT_CHANCE = 0.6;
 const RPG_DESTROY_CHANCE = 0.6;
 const DRONE_DESTROY_CHANCE = 0.6;
-const SABOTEUR_DESTROY_CHANCE = 0.75;
 const COUNTER_INTEL_PENALTY = 0.16;
 const COUNTER_INTEL_PENALTY_CAP = 0.35;
 const UNIT_KEYS = ["inf", "rpg", "tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "saboteur", "boat", "cruiser"];
+const TECH_SFX_UNITS = ["tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "boat", "cruiser"];
 const WEAPON_COOLDOWN_KEYS = ["rpg", "tank", "rocket", "mlrs", "cruiser"];
 const STATIC_DEPLOY_UNITS = new Set(["rocket", "aa", "aaPlus", "ew"]);
 
@@ -261,6 +264,7 @@ const MAX_WS_BACKLOG_BYTES = 64 * 1024;
 const MESSAGE_WINDOW_MS = 5_000;
 const MAX_MESSAGES_PER_WINDOW = 80;
 const STATE_BROADCAST_DELAY_MS = 16;
+const NUKE_ACTION_THROTTLE_MS = 900;
 const LOBBY_CODE_LENGTH = 4;
 const EMPTY_LOBBY_TTL_MS = 30 * 60_000;
 const EMPTY_RUNNING_TTL_MS = 20 * 60_000;
@@ -347,18 +351,13 @@ setInterval(() => {
 function serveHttp(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
-  if (url.pathname === "/api/music") {
-    const files = getMusicFiles();
-    sendJson(res, {
-      files,
-      playlist: getMusicPlaylist(),
-      sfx: getEventSfxPaths()
-    });
+  if (url.pathname === "/api/sfx") {
+    sendJson(res, { sfx: getEventSfxPaths() });
     return;
   }
 
-  if (url.pathname.startsWith("/music/")) {
-    const file = safePath(MUSIC_DIR, url.pathname.replace(/^\/music\//, ""));
+  if (url.pathname.startsWith("/sfx/")) {
+    const file = safePath(SFX_DIR, url.pathname.replace(/^\/sfx\//, ""));
     serveFile(req, file, res);
     return;
   }
@@ -465,25 +464,22 @@ function sendJson(res, body) {
   res.end(JSON.stringify(body));
 }
 
-function getMusicFiles() {
-  if (!fs.existsSync(MUSIC_DIR)) return [];
-  return fs.readdirSync(MUSIC_DIR)
-    .filter((file) => /\.mp3$/i.test(file) || /\.(wav|ogg)$/i.test(file))
-    .sort((a, b) => a.localeCompare(b, "ru"));
-}
-
-function getMusicPlaylist() {
-  const eventFiles = new Set(Object.values(EVENT_SFX_FILES).map((file) => file.toLowerCase()));
-  return getMusicFiles()
-    .filter((file) => !eventFiles.has(file.toLowerCase()))
-    .map((file) => `/music/${encodeURIComponent(file)}`);
-}
-
 function getEventSfxPaths() {
-  return Object.fromEntries(Object.entries(EVENT_SFX_FILES).map(([name, file]) => [
-    name,
-    `/music/${encodeURIComponent(file)}`
-  ]));
+  const entries = [];
+  try {
+    for (const file of fs.readdirSync(SFX_DIR)) {
+      if (!file.toLowerCase().endsWith(".mp3")) continue;
+      const name = path.basename(file, path.extname(file));
+      entries.push([name, `/sfx/${encodeURIComponent(file)}`]);
+    }
+  } catch (error) {}
+  const paths = Object.fromEntries(entries);
+  for (const [alias, target] of Object.entries(EVENT_SFX_ALIASES)) {
+    if (paths[target] && !paths[alias]) {
+      paths[alias] = paths[target];
+    }
+  }
+  return paths;
 }
 
 function createGameRoom() {
@@ -594,7 +590,6 @@ function sendHello(client) {
     colors: COLOR_OPTIONS,
     width: WIDTH,
     height: HEIGHT,
-    music: getMusicPlaylist(),
     sfx: getEventSfxPaths()
   });
 }
@@ -621,6 +616,8 @@ function attachWebSocket(socket, req) {
     waitingForDrain: false,
     lastMapVersionSent: -1,
     lastChatVersionSent: -1,
+    lastNukeActionAt: 0,
+    lastNukeThrottleNoticeAt: 0,
     alive: true,
     lastSeen: Date.now()
   };
@@ -1003,6 +1000,20 @@ function emitSfx(name, x, y, options = {}) {
     name,
     x,
     y,
+    at: Date.now(),
+    ...options
+  });
+}
+
+function emitFlight(kind, from, to, duration, options = {}) {
+  if (!from || !to) return;
+  broadcast({
+    type: "flight",
+    id: ++game.flightId,
+    kind,
+    from: { x: from.x, y: from.y },
+    to: { x: to.x, y: to.y },
+    duration,
     at: Date.now(),
     ...options
   });
@@ -1485,6 +1496,7 @@ function startConstruction(cell, data) {
     startedAt: now,
     completesAt: now + CONSTRUCTION_MS
   };
+  emitSfx("stroyka", cell.x, cell.y, { playerId: data.owner });
 }
 
 function handleDemolish(client, message) {
@@ -1507,8 +1519,8 @@ function handleDemolish(client, message) {
   cell.building = null;
   if (demolishedType === "ammoDepot") clampAmmoToCapacity(client.playerId);
   touchMap();
-  addSystemEvent(`${game.players[client.playerId].country} сносит постройку: ${label}.`, { sound: "demolish" });
-  emitSfx("demolish", cell.x, cell.y, { playerId: client.playerId });
+  addSystemEvent(`${game.players[client.playerId].country} сносит постройку: ${label}.`);
+  emitSfx("d_house", cell.x, cell.y, { playerId: client.playerId });
   recomputePlayerFlags();
   broadcastState();
 }
@@ -1548,8 +1560,8 @@ function handleScrap(client, message) {
 
   pruneWeaponCooldowns(cell);
   touchMap();
-  emitSfx("demolish", cell.x, cell.y, { playerId: client.playerId });
-  addSystemEvent(`${player.country} списывает технику: ${definition.label}. Возврат: ${resourceBundleText(refund)}.`, { sound: "demolish" });
+  emitSfx("d_tehnika", cell.x, cell.y, { playerId: client.playerId });
+  addSystemEvent(`${player.country} списывает технику: ${definition.label}. Возврат: ${resourceBundleText(refund)}.`);
   broadcastState();
 }
 
@@ -1641,6 +1653,11 @@ function handleHire(client, message) {
     return;
   }
 
+  if (kind === "saboteur") {
+    sendError(client, "Шахед теперь запускается с завода: нажми Шахед и выбери цель на карте.");
+    return;
+  }
+
   if (STATIC_DEPLOY_UNITS.has(kind)) {
     handleStaticDeploy(client, player, definition, cell, kind);
     return;
@@ -1664,7 +1681,7 @@ function handleHire(client, message) {
   }
 
   if (kind === "saboteur" && !cooldownReady(player, "saboteur")) {
-    sendError(client, `Диверсант готовится: ${Math.ceil(((player.cooldowns.saboteur || 0) - Date.now()) / 1000)} с.`);
+    sendError(client, `Шахед готовится: ${Math.ceil(((player.cooldowns.saboteur || 0) - Date.now()) / 1000)} с.`);
     return;
   }
 
@@ -1783,6 +1800,8 @@ function handleAction(client, message) {
     handleMobilization(client);
   } else if (action === "nuke") {
     handleNuke(client, message);
+  } else if (action === "shahed") {
+    handleShahedStrike(client, message);
   }
 }
 
@@ -1812,7 +1831,7 @@ function handleDiplomacy(client, message) {
     game.diplomacyOffers = game.diplomacyOffers.filter((item) => item.id !== offer.id);
     if (action === "acceptAlliance") {
       setRelation(playerId, offer.from, "alliance");
-      addSystemEvent(`${game.players[playerId].country} принимает союз с ${game.players[offer.from].country}.`, { sound: "diplomacy" });
+      addSystemEvent(`${game.players[playerId].country} принимает союз с ${game.players[offer.from].country}.`, { sound: "soyuz" });
       botSayPhrase(playerId, "alliance");
       botSayPhrase(offer.from, "alliance");
     } else {
@@ -2334,7 +2353,7 @@ function handleResourceTransfer(fromId, toId, resources) {
   }
 
   transferResourceBundle(from, to, resources);
-  addSystemEvent(`${from.country} передает ${to.country}: ${resourceBundleText(resources)}.`, { sound: "diplomacy" });
+  addSystemEvent(`${from.country} передает ${to.country}: ${resourceBundleText(resources)}.`, { sound: resourceTransferSound(resources) });
 
   if (to.vassalOf === fromId) {
     const available = capResourceBundleToPlayer(to, resources);
@@ -2343,7 +2362,7 @@ function handleResourceTransfer(fromId, toId, resources) {
       return;
     }
     transferResourceBundle(to, from, available);
-    addSystemEvent(`${to.country} автоматически отправляет сюзерену ${from.country}: ${resourceBundleText(available)}.`, { sound: "diplomacy" });
+    addSystemEvent(`${to.country} автоматически отправляет сюзерену ${from.country}: ${resourceBundleText(available)}.`, { sound: resourceTransferSound(available) });
     broadcastState();
     return;
   }
@@ -2422,7 +2441,7 @@ function handleResourceRequestResponse(playerId, requestId, accepted) {
   }
 
   transferResourceBundle(responder, requester, request.resources);
-  addSystemEvent(`${responder.country} отправляет ${requester.country}: ${resourceBundleText(request.resources)}.`, { sound: "diplomacy" });
+  addSystemEvent(`${responder.country} отправляет ${requester.country}: ${resourceBundleText(request.resources)}.`, { sound: resourceTransferSound(request.resources) });
   broadcastState();
 }
 
@@ -2467,7 +2486,7 @@ function resolveBotResourceRequest(fromId, botId, resources) {
 
   if (accepted) {
     transferResourceBundle(bot, requester, capped);
-    addSystemEvent(`${bot.country} соглашается помочь ${requester.country}: ${resourceBundleText(capped)}.`, { sound: "diplomacy" });
+    addSystemEvent(`${bot.country} соглашается помочь ${requester.country}: ${resourceBundleText(capped)}.`, { sound: resourceTransferSound(capped) });
   } else {
     addSystemEvent(`${bot.country} отказывает ${requester.country} в ресурсах.`, { sound: "diplomacy" });
   }
@@ -2508,6 +2527,10 @@ function transferResourceBundle(from, to, resources) {
   for (const [resource, amount] of Object.entries(resources)) {
     addResource(to, resource, amount);
   }
+}
+
+function resourceTransferSound(resources = {}) {
+  return (resources.gold || 0) > 0 ? "money" : "diplomacy";
 }
 
 function setResourcesExact(player, resources) {
@@ -2566,7 +2589,7 @@ function runSupportDeals(now) {
     if (resourceBundleEmpty(resources)) continue;
 
     transferResourceBundle(from, to, resources);
-    addSystemEvent(`${from.country} отправляет помощь ${to.country}: ${resourceBundleText(resources)}.`, { sound: "diplomacy" });
+    addSystemEvent(`${from.country} отправляет помощь ${to.country}: ${resourceBundleText(resources)}.`, { sound: resourceTransferSound(resources) });
     changed = true;
   }
   return changed;
@@ -2665,7 +2688,7 @@ function offerAlliance(fromId, toId) {
     const chance = botAllianceChance(toId, fromId);
     if (Math.random() < chance) {
       setRelation(fromId, toId, "alliance");
-      addSystemEvent(`${game.players[toId].country} принимает союз с ${game.players[fromId].country}.`, { sound: "diplomacy" });
+      addSystemEvent(`${game.players[toId].country} принимает союз с ${game.players[fromId].country}.`, { sound: "soyuz" });
       botSayPhrase(toId, "alliance");
     } else {
       addSystemEvent(`${game.players[toId].country} отклоняет союз с ${game.players[fromId].country}.`, { sound: "diplomacy" });
@@ -2813,6 +2836,12 @@ function cancelSupportBetween(a, b) {
   }
 }
 
+function emitMovementSfx(moved, cell, playerId) {
+  if (!cell) return;
+  if ((moved.tank || 0) > 0) emitSfx("tank", cell.x, cell.y, { playerId });
+  if ((moved.mlrs || 0) > 0) emitSfx("rszo", cell.x, cell.y, { playerId });
+}
+
 function handleMove(client, message) {
   const playerId = client.playerId;
   const player = game.players[playerId];
@@ -2855,15 +2884,11 @@ function handleMove(client, message) {
     moved.drone = Math.min(sourceUnits.drone, requestedDrone);
     moved.saboteur = Math.min(sourceUnits.saboteur, requestedSaboteur);
     if (moved.drone <= 0 && moved.saboteur <= 0) {
-      sendError(client, "На клетке нет дронов или диверсантов.");
-      return;
-    }
-    if (moved.saboteur > 0 && !isPassable(to)) {
-      sendError(client, "Диверсант не ходит по воде без моста.");
+      sendError(client, "На клетке нет дронов или Шахедов.");
       return;
     }
     if (to.owner && to.owner !== playerId && !isHostile(playerId, to.owner) && !controlsOwner(playerId, to.owner)) {
-      sendError(client, "Скрытые юниты можно заводить к врагу, нейтралу или вассалу.");
+      sendError(client, "Воздушные юниты можно заводить к врагу, нейтралу или вассалу.");
       return;
     }
     const ammoCost = movementAmmoCost(moved.drone + moved.saboteur, playerId, from);
@@ -2875,6 +2900,7 @@ function handleMove(client, message) {
     sourceUnits.drone -= moved.drone;
     sourceUnits.saboteur -= moved.saboteur;
     interceptDronesEnteringCell(playerId, to, moved);
+    interceptShahedsEnteringCell(playerId, to, moved);
     if (movingUnitCount(moved) <= 0) {
       touchMap();
       send(client, { type: "moveResult", from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y } });
@@ -3062,6 +3088,7 @@ function handleMove(client, message) {
   sourceUnits.drone -= moved.drone;
   sourceUnits.saboteur -= moved.saboteur;
   interceptDronesEnteringCell(playerId, to, moved);
+  interceptShahedsEnteringCell(playerId, to, moved);
   if (movingUnitCount(moved) <= 0) {
     pruneWeaponCooldowns(from);
     touchMap();
@@ -3075,6 +3102,7 @@ function handleMove(client, message) {
   }
   resolveMoveIntoCell(playerId, to, moved);
   applyMovedWeaponCooldowns(from, to, playerId, movedCooldowns);
+  emitMovementSfx(moved, to, playerId);
   pruneWeaponCooldowns(from);
   pruneWeaponCooldowns(to);
   touchMap();
@@ -3161,6 +3189,7 @@ function handleTankShot(client, message) {
   }
 
   const lossSnapshot = armyGoldSnapshot();
+  const techBefore = hostileTechUnitCount(playerId, target);
   for (const enemyId of hostileUnitIdsAtCell(playerId, target)) {
     const enemyUnits = unitsFor(target, enemyId);
     enemyUnits.inf = Math.max(0, enemyUnits.inf - 2);
@@ -3173,6 +3202,7 @@ function handleTankShot(client, message) {
   }
 
   applyArmyLossEffects(lossSnapshot, playerId);
+  emitTechDestroyedIfChanged(techBefore, target, playerId);
   pruneWeaponCooldowns(target);
   setWeaponCooldown(from, player, playerId, "tank");
   emitSfx("shot", from.x, from.y, { weapon: "tank", playerId });
@@ -3212,6 +3242,7 @@ function handleRpgShot(client, message) {
   }
 
   const lossSnapshot = armyGoldSnapshot();
+  const techBefore = hostileTechUnitCount(playerId, target);
   const hit = damageRpgCell(playerId, target);
   if (!hit) {
     sendError(client, "На соседней клетке нет вражеской техники для РПГ.");
@@ -3220,6 +3251,7 @@ function handleRpgShot(client, message) {
 
   spend(player, { ammo: 1 });
   applyArmyLossEffects(lossSnapshot, playerId);
+  emitTechDestroyedIfChanged(techBefore, target, playerId);
   pruneWeaponCooldowns(target);
   setWeaponCooldown(from, player, playerId, "rpg");
   emitSfx("shot", from.x, from.y, { weapon: "rpg", playerId });
@@ -3275,6 +3307,7 @@ function handleRocketStrike(client, message) {
 
   if (blocker) {
     emitExplosions([{ x: target.x, y: target.y, kind: "intercept" }, { x: blocker.x, y: blocker.y, kind: "aa" }]);
+    emitSfx("pvo", blocker.x, blocker.y, { playerId });
     sendInfo(client, "Ракета перехвачена ПВО.");
     touchMap();
     broadcastState();
@@ -3282,9 +3315,12 @@ function handleRocketStrike(client, message) {
   }
 
   const lossSnapshot = armyGoldSnapshot();
+  const techBefore = hostileTechUnitCount(playerId, target);
   damageRocketCell(playerId, target);
   applyArmyLossEffects(lossSnapshot, playerId);
+  emitTechDestroyedIfChanged(techBefore, target, playerId);
   pruneWeaponCooldowns(target);
+  emitSfx("raketa", target.x, target.y, { playerId });
   emitExplosions([{ x: target.x, y: target.y, kind: "rocket" }]);
   addSystemEvent(`${game.players[playerId].country} запускает ракету по ${cellTargetName(target, playerId)}.`, { sound: "alert" });
   touchMap();
@@ -3408,7 +3444,9 @@ function handleMlrs(client, message) {
   const blasts = [];
 
   for (const cell of mlrsSalvoCells(target)) {
+    const techBefore = hostileTechUnitCount(playerId, cell);
     damageMlrsCell(playerId, cell);
+    emitTechDestroyedIfChanged(techBefore, cell, playerId);
     pruneWeaponCooldowns(cell);
     blasts.push({ x: cell.x, y: cell.y, kind: "mlrs" });
   }
@@ -3417,6 +3455,9 @@ function handleMlrs(client, message) {
   applyArmyLossEffects(lossSnapshot, playerId);
   emitSfx("shot", from.x, from.y, { weapon: "mlrs", playerId });
   emitExplosions(blasts);
+  for (const blast of blasts) {
+    emitSfx("rszo_hit", blast.x, blast.y, { playerId });
+  }
   addSystemEvent(`${game.players[playerId].country} накрывает ${cellTargetName(target, playerId)} залпом РСЗО.`, { sound: "alert" });
   touchMap();
   recomputePlayerFlags();
@@ -3447,6 +3488,7 @@ function handleCruiserSalvo(client, message) {
   }
 
   const lossSnapshot = armyGoldSnapshot();
+  const techBefore = hostileTechUnitCount(playerId, target);
   for (let index = 0; index < 2; index += 1) {
     damageCruiserCell(playerId, target);
     pruneWeaponCooldowns(target);
@@ -3454,6 +3496,7 @@ function handleCruiserSalvo(client, message) {
 
   setWeaponCooldown(from, player, playerId, "cruiser");
   applyArmyLossEffects(lossSnapshot, playerId);
+  emitTechDestroyedIfChanged(techBefore, target, playerId);
   emitSfx("shot", from.x, from.y, { weapon: "cruiser", playerId });
   emitExplosions([{ x: target.x, y: target.y, kind: "cruiser" }]);
   addSystemEvent(`${game.players[playerId].country} стреляет крейсером по ${cellTargetName(target, playerId)}.`, { sound: "alert" });
@@ -3484,6 +3527,7 @@ function handleDroneDetonation(client, message) {
 function detonateDroneAt(playerId, cell) {
   const defenders = hostileUnitIdsAtCell(playerId, cell);
   const lossSnapshot = armyGoldSnapshot();
+  const techBefore = hostileTechUnitCount(playerId, cell);
   const ownUnits = unitsFor(cell, playerId);
   ownUnits.drone = Math.max(0, ownUnits.drone - 1);
 
@@ -3512,6 +3556,7 @@ function detonateDroneAt(playerId, cell) {
   }
 
   applyArmyLossEffects(lossSnapshot, playerId);
+  emitTechDestroyedIfChanged(techBefore, cell, playerId);
   pruneWeaponCooldowns(cell);
   touchMap();
   emitSfx("shot", cell.x, cell.y, { weapon: "drone", playerId });
@@ -3528,12 +3573,12 @@ function handleSaboteurDetonation(client, message) {
   const ownUnits = cell ? unitsFor(cell, playerId) : null;
 
   if (!cell || !ownUnits || (ownUnits.saboteur || 0) <= 0) {
-    sendError(client, "Для взрыва выбери клетку со своим диверсантом.");
+    sendError(client, "Для удара выбери клетку со своим Шахедом.");
     return;
   }
 
   if (!cell.building || !cell.building.owner || !isHostile(playerId, cell.building.owner)) {
-    sendError(client, "Диверсант взрывает только вражеские постройки.");
+    sendError(client, "Шахед бьет только по вражеским постройкам.");
     return;
   }
 
@@ -3547,14 +3592,11 @@ function detonateSaboteurAt(playerId, cell) {
   const targetOwner = cell.building.owner;
   const buildingLabel = BUILDINGS[cell.building.type]?.label || "постройку";
   ownUnits.saboteur = Math.max(0, ownUnits.saboteur - 1);
-  const destroyed = Math.random() < SABOTEUR_DESTROY_CHANCE;
-  if (destroyed) {
-    destroyBuilding(cell, playerId);
-  }
+  destroyBuilding(cell, playerId);
   touchMap();
   emitSfx("shot", cell.x, cell.y, { weapon: "saboteur", playerId });
   emitExplosions([{ x: cell.x, y: cell.y, kind: "rocket" }]);
-  addSystemEvent(`${game.players[playerId].country} проводит диверсию ${destroyed ? `и уничтожает ${buildingLabel}` : `против ${buildingLabel}, но заряд не сработал`} страны ${game.players[targetOwner]?.country || "противника"}.`, { sound: "alert" });
+  addSystemEvent(`${game.players[playerId].country} направляет Шахед и уничтожает ${buildingLabel} страны ${game.players[targetOwner]?.country || "противника"}.`, { sound: "alert" });
   recomputePlayerFlags();
   checkVictory();
   return true;
@@ -3592,9 +3634,108 @@ function mobilizationActive(playerId, now = Date.now()) {
   return true;
 }
 
+function handleShahedStrike(client, message) {
+  const playerId = client.playerId;
+  const player = game.players[playerId];
+  const now = Date.now();
+
+  if (now - (client.lastShahedActionAt || 0) < SHAHED_ACTION_THROTTLE_MS) {
+    return;
+  }
+  client.lastShahedActionAt = now;
+
+  const target = getCell(message.tx, message.ty);
+  if (!target) {
+    sendError(client, "Выбери точку удара Шахеда.");
+    return;
+  }
+
+  const factory = factoryLaunchCell(playerId);
+  if (!factory) {
+    sendError(client, "Для запуска Шахеда нужен хотя бы один завод.");
+    return;
+  }
+
+  if (!cooldownReady(player, "saboteur")) {
+    sendError(client, `Шахед готовится: ${Math.ceil(((player.cooldowns.saboteur || 0) - Date.now()) / 1000)} с.`);
+    return;
+  }
+
+  const cost = UNITS.saboteur.cost;
+  if (!canPay(player, cost)) {
+    sendError(client, "Не хватает ресурсов для запуска Шахеда.");
+    return;
+  }
+
+  launchShahedStrike(playerId, target, factory);
+}
+
+function launchShahedStrike(playerId, target, factory) {
+  const player = game.players[playerId];
+  if (!player || !target || !factory) return false;
+  spend(player, UNITS.saboteur.cost);
+  setCooldown(player, "saboteur");
+  emitFlight("shahed", factory, target, SHAHED_FLIGHT_MS, { playerId });
+  emitSfx("shahed", factory.x, factory.y, { playerId });
+  addSystemEvent(`${player.country} запускает Шахед.`);
+  broadcastState();
+
+  const room = game;
+  const tx = target.x;
+  const ty = target.y;
+  const timer = setTimeout(() => withGame(room, () => resolveShahedImpact(playerId, tx, ty)), SHAHED_FLIGHT_MS);
+  timer.unref?.();
+  return true;
+}
+
+function resolveShahedImpact(playerId, tx, ty) {
+  if (!game || game.ended) return;
+  const target = getCell(tx, ty);
+  if (!target) return;
+
+  const blocker = findHostileAirDefense(playerId, target.x, target.y, 4);
+  if (blocker) {
+    const blockerOwner = airDefenseOwnerAtCell(blocker, playerId);
+    emitSfx("pvo", blocker.x, blocker.y, { playerId: blockerOwner || playerId });
+    emitExplosions([{ x: target.x, y: target.y, kind: "aa" }]);
+    addSystemEvent(`ПВО сбивает Шахед у ${target.x + 1}:${target.y + 1}.`);
+    broadcastState();
+    return;
+  }
+
+  let targetOwner = target.building?.owner || null;
+  let buildingLabel = "";
+  if (target.building && targetOwner && isHostile(playerId, targetOwner)) {
+    buildingLabel = BUILDINGS[target.building.type]?.label || "постройку";
+    destroyBuilding(target, playerId);
+  }
+
+  touchMap();
+  emitExplosions([{ x: target.x, y: target.y, kind: "rocket" }]);
+  if (buildingLabel) {
+    addSystemEvent(`${game.players[playerId].country} направляет Шахед и уничтожает ${buildingLabel} страны ${game.players[targetOwner]?.country || "противника"}.`);
+  } else {
+    addSystemEvent(`${game.players[playerId].country} направляет Шахед по клетке ${target.x + 1}:${target.y + 1}.`);
+  }
+  recomputePlayerFlags();
+  checkVictory();
+  broadcastStateNow();
+}
+
 function handleNuke(client, message) {
   const playerId = client.playerId;
   const player = game.players[playerId];
+  const now = Date.now();
+
+  if (now - (client.lastNukeActionAt || 0) < NUKE_ACTION_THROTTLE_MS) {
+    if (now - (client.lastNukeThrottleNoticeAt || 0) >= NUKE_ACTION_THROTTLE_MS) {
+      client.lastNukeThrottleNoticeAt = now;
+      sendError(client, "Ядерка уже обрабатывается, подожди момент.");
+    }
+    return;
+  }
+  client.lastNukeActionAt = now;
+
   const target = getCell(message.tx, message.ty);
 
   if (!target) {
@@ -3630,17 +3771,35 @@ function launchNuke(playerId, target, client = null, plantCell = null) {
   if (!plant) return { failed: true };
   spend(player, NUCLEAR_COST);
   setNuclearPlantCooldown(plant, player);
-  const lossSnapshot = armyGoldSnapshot();
+  const launchCell = nukeLaunchCell(playerId, plant);
+  emitFlight("nuke", launchCell, target, NUKE_FLIGHT_MS, { playerId });
+  broadcastState();
+
+  const room = game;
+  const tx = target.x;
+  const ty = target.y;
+  const timer = setTimeout(() => withGame(room, () => resolveNukeImpact(playerId, tx, ty, client)), NUKE_FLIGHT_MS);
+  timer.unref?.();
+  return { launched: true };
+}
+
+function resolveNukeImpact(playerId, tx, ty, client = null) {
+  if (!game || game.ended) return;
+  const target = getCell(tx, ty);
+  if (!target) return;
 
   const blocker = findHostileNuclearDefense(playerId, target.x, target.y, 5);
   if (blocker) {
     emitExplosions([{ x: target.x, y: target.y, kind: "intercept" }, { x: blocker.x, y: blocker.y, kind: "aa" }]);
-    emitSfx("alert", blocker.x, blocker.y, { playerId });
+    emitSfx("pvo", blocker.x, blocker.y, { playerId });
     if (client) sendInfo(client, "Ядерный удар перехвачен ПВО+.");
     addSystemEvent(`${game.players[playerId].country} запускает ядерку, но ПВО+ перехватывает удар.`, { sound: "alert" });
-    return { intercepted: true };
+    touchMap();
+    broadcastStateNow();
+    return;
   }
 
+  const lossSnapshot = armyGoldSnapshot();
   for (let y = target.y - 1; y <= target.y + 1; y += 1) {
     for (let x = target.x - 1; x <= target.x + 1; x += 1) {
       const cell = getCell(x, y);
@@ -3664,11 +3823,23 @@ function launchNuke(playerId, target, client = null, plantCell = null) {
 
   applyArmyLossEffects(lossSnapshot, playerId);
   touchMap();
-  broadcastStateNow();
   emitExplosions([{ x: target.x, y: target.y, kind: "nuke" }]);
-  emitSfx("nuke", target.x, target.y, { playerId });
+  emitSfx("yaderka", target.x, target.y, { playerId });
   addSystemEvent(`${game.players[playerId].country} использует ядерку против ${cellTargetName(target, playerId)}.`, { sound: "alert" });
-  return { intercepted: false };
+  recomputePlayerFlags();
+  checkVictory();
+  broadcastStateNow();
+}
+
+function nukeLaunchCell(playerId, plantCell = null) {
+  let fallback = plantCell || null;
+  const hq = findHqCell(playerId);
+  if (hq) return hq;
+  if (fallback) return fallback;
+  forEachCell((cell) => {
+    if (!fallback && controlsCell(playerId, cell)) fallback = cell;
+  });
+  return fallback || { x: 0, y: 0 };
 }
 
 function createFreshGame() {
@@ -3702,6 +3873,7 @@ function createFreshGame() {
     reportId: 0,
     stateVersion: 0,
     mapVersion: 0,
+    flightId: 0,
     devNoCooldowns: false,
     botCursor: 0,
     botTargetMemory: {},
@@ -3945,6 +4117,11 @@ function gameLoop() {
   mapChanged = constructionResult.mapChanged || mapChanged;
 
   if (updateEwInterceptions()) {
+    changed = true;
+    mapChanged = true;
+  }
+
+  if (updateAirDefenseInterceptions()) {
     changed = true;
     mapChanged = true;
   }
@@ -4229,7 +4406,7 @@ function botVassalSupport(playerId) {
   if (resourceBundleEmpty(resources)) return false;
   player.lastVassalSupport = now;
   transferResourceBundle(player, overlord, resources);
-  addSystemEvent(`${player.country} как вассал отправляет ресурсы ${overlord.country}: ${resourceBundleText(resources)}.`, { sound: "diplomacy" });
+  addSystemEvent(`${player.country} как вассал отправляет ресурсы ${overlord.country}: ${resourceBundleText(resources)}.`, { sound: resourceTransferSound(resources) });
   return true;
 }
 
@@ -4299,7 +4476,7 @@ function botRequestAllyHelp(playerId) {
       if (needGold && (ally.resources.gold || 0) > 20) bundle.gold = Math.min(8, ally.resources.gold - 15);
       if (!resourceBundleEmpty(bundle)) {
         transferResourceBundle(ally, player, bundle);
-        addSystemEvent(`${ally.country} помогает ${player.country} в трудный момент: ${resourceBundleText(bundle)}.`, { sound: "diplomacy" });
+        addSystemEvent(`${ally.country} помогает ${player.country} в трудный момент: ${resourceBundleText(bundle)}.`, { sound: resourceTransferSound(bundle) });
         return true;
       }
     }
@@ -4366,7 +4543,7 @@ function botRequestEmergencyAid(playerId, criticalAmmo) {
     if (resourceBundleEmpty(bundle)) continue;
     player._lastEmergencyAidRequest = now;
     transferResourceBundle(ally, player, bundle);
-    addSystemEvent(`${ally.country} sends emergency aid to ${player.country}: ${resourceBundleText(bundle)}.`, { sound: "diplomacy" });
+    addSystemEvent(`${ally.country} sends emergency aid to ${player.country}: ${resourceBundleText(bundle)}.`, { sound: resourceTransferSound(bundle) });
     return true;
   }
 
@@ -4734,7 +4911,7 @@ function updateRandomEvents(now = Date.now()) {
       startedAt: now,
       endsAt: now + (RANDOM_EVENTS[event.type]?.duration || 60_000)
     };
-    addSystemEvent(`${event.label} началось.`, { sound: "alert" });
+    addSystemEvent(`${event.label} началось.`, { sound: event.type === "rain" ? "rain" : "alert" });
     changed = true;
     mapChanged = true;
   }
@@ -4806,6 +4983,24 @@ function updateEwInterceptions() {
     for (const playerId of PLAYER_IDS) {
       if ((unitsFor(cell, playerId).ew || 0) <= 0) continue;
       if (interceptHostileDronesNearEw(playerId, cell)) {
+        changed = true;
+      }
+    }
+  });
+  if (changed) applyArmyLossEffects(lossSnapshot, null);
+  return changed;
+}
+
+function updateAirDefenseInterceptions() {
+  let changed = false;
+  const lossSnapshot = armyGoldSnapshot();
+  const now = Date.now();
+  forEachCell((cell) => {
+    for (const playerId of PLAYER_IDS) {
+      const units = unitsFor(cell, playerId);
+      if ((units.aa || 0) <= 0 && (units.aaPlus || 0) <= 0) continue;
+      if (airDefenseSabotaged(cell, playerId, now)) continue;
+      if (interceptHostileShahedsNearAirDefense(playerId, cell)) {
         changed = true;
       }
     }
@@ -5552,7 +5747,7 @@ function tryBotHire(playerId, options = {}) {
     }
     const definition = UNITS[kind];
     if (!definition) continue;
-    if (kind === "saboteur" && !cooldownReady(player, "saboteur")) continue;
+    if (kind === "saboteur") continue;
 
     if (kind === "boat" || kind === "cruiser") {
       const water = findBotVesselHireCell(playerId, kind);
@@ -5907,6 +6102,7 @@ function tryBotMove(playerId, options = {}) {
     su.mlrs -= moved.mlrs;
     resolveMoveIntoCell(playerId, target, moved);
     applyMovedWeaponCooldowns(from, target, playerId, movedCooldowns);
+    emitMovementSfx(moved, target, playerId);
     pruneWeaponCooldowns(from);
     pruneWeaponCooldowns(target);
 
@@ -6148,36 +6344,10 @@ function tryBotDrone(playerId) {
 function tryBotSaboteur(playerId) {
   const player = game.players[playerId];
   if (!player || isDefeated(playerId)) return false;
-  const saboteurCells = shuffle(allCells(game.map).filter((cell) => (unitsFor(cell, playerId).saboteur || 0) > 0));
-
-  for (const cell of saboteurCells) {
-    if (cell.building?.owner && isHostile(playerId, cell.building.owner) && detonateSaboteurAt(playerId, cell)) {
-      return true;
-    }
-  }
-
-  for (const from of saboteurCells) {
-    const target = botFindSaboteurTarget(playerId, from);
-    if (!target) continue;
-    const step = shuffle(neighbors(from.x, from.y).map(([x, y]) => getCell(x, y)).filter(Boolean))
-      .filter((cell) =>
-        cell &&
-        isPassable(cell) &&
-        cell.terrain !== "water" &&
-        (!cell.owner || cell.owner === playerId || isHostile(playerId, cell.owner) || controlsOwner(playerId, cell.owner)) &&
-        distance(cell, target) < distance(from, target)
-      )
-      .sort((a, b) => distance(a, target) - distance(b, target))[0];
-    if (!step) continue;
-    const ammoCost = movementAmmoCost(1, playerId, from);
-    if (!canPay(player, { ammo: ammoCost })) return false;
-    spend(player, { ammo: ammoCost });
-    unitsFor(from, playerId).saboteur -= 1;
-    unitsFor(step, playerId).saboteur += 1;
-    touchMap();
-    return true;
-  }
-  return false;
+  const factory = factoryLaunchCell(playerId);
+  if (!factory || !cooldownReady(player, "saboteur") || !canPay(player, UNITS.saboteur.cost)) return false;
+  const target = botFindSaboteurTarget(playerId, factory);
+  return target ? launchShahedStrike(playerId, target, factory) : false;
 }
 
 function botFindSaboteurTarget(playerId, from) {
@@ -6186,7 +6356,6 @@ function botFindSaboteurTarget(playerId, from) {
   forEachCell((cell) => {
     if (!cell.building?.owner || !isHostile(playerId, cell.building.owner)) return;
     if (!botCanSeeTarget(playerId, cell)) return;
-    if (!isPassable(cell) || cell.terrain === "water") return;
     const score = botNukeBuildingValue(cell.building.type) * 10 - distance(from, cell);
     if (score > bestScore) {
       bestScore = score;
@@ -6532,12 +6701,14 @@ function tryBotShoot(playerId) {
     if (maybeMisfire(playerId, from, "cruiser")) return true;
     rememberBotTarget(playerId, "cruiser", target);
     const lossSnapshot = armyGoldSnapshot();
+    const techBefore = hostileTechUnitCount(playerId, target);
     for (let index = 0; index < 2; index += 1) {
       damageCruiserCell(playerId, target);
       pruneWeaponCooldowns(target);
     }
     setWeaponCooldown(from, player, playerId, "cruiser");
     applyArmyLossEffects(lossSnapshot, playerId);
+    emitTechDestroyedIfChanged(techBefore, target, playerId);
     emitSfx("shot", from.x, from.y, { weapon: "cruiser", playerId });
     emitExplosions([{ x: target.x, y: target.y, kind: "cruiser" }]);
     addSystemEvent(`${player.country} стреляет крейсером по ${cellTargetName(target, playerId)}.`, { sound: "alert" });
@@ -6553,11 +6724,13 @@ function tryBotShoot(playerId) {
       if (target) {
         if (maybeMisfire(playerId, from, "rpg")) return true;
         const lossSnapshot = armyGoldSnapshot();
+        const techBefore = hostileTechUnitCount(playerId, target);
         const hit = damageRpgCell(playerId, target);
         if (hit) {
           rememberBotTarget(playerId, "rpg", target);
           spend(player, { ammo: 1 });
           applyArmyLossEffects(lossSnapshot, playerId);
+          emitTechDestroyedIfChanged(techBefore, target, playerId);
           pruneWeaponCooldowns(target);
           setWeaponCooldown(from, player, playerId, "rpg");
           emitSfx("shot", from.x, from.y, { weapon: "rpg", playerId });
@@ -6582,6 +6755,7 @@ function tryBotShoot(playerId) {
         if (maybeMisfire(playerId, from, "tank")) return true;
         rememberBotTarget(playerId, "tank", target);
         const lossSnapshot = armyGoldSnapshot();
+        const techBefore = hostileTechUnitCount(playerId, target);
         for (const enemyId of hostileUnitIdsAtCell(playerId, target)) {
           const eu = unitsFor(target, enemyId);
           eu.inf    = Math.max(0, eu.inf    - 2);
@@ -6592,6 +6766,7 @@ function tryBotShoot(playerId) {
           eu.boat   = Math.max(0, eu.boat   - 1);
         }
         applyArmyLossEffects(lossSnapshot, playerId);
+        emitTechDestroyedIfChanged(techBefore, target, playerId);
         pruneWeaponCooldowns(target);
         setWeaponCooldown(from, player, playerId, "tank");
         emitSfx("shot", from.x, from.y, { weapon: "tank", playerId });
@@ -6624,9 +6799,12 @@ function tryBotShoot(playerId) {
           emitExplosions([{ x: target.x, y: target.y, kind: "intercept" }, { x: blocker.x, y: blocker.y, kind: "aa" }]);
         } else {
           const lossSnapshot = armyGoldSnapshot();
+          const techBefore = hostileTechUnitCount(playerId, target);
           damageRocketCell(playerId, target);
           applyArmyLossEffects(lossSnapshot, playerId);
+          emitTechDestroyedIfChanged(techBefore, target, playerId);
           pruneWeaponCooldowns(target);
+          emitSfx("raketa", target.x, target.y, { playerId });
           emitExplosions([{ x: target.x, y: target.y, kind: "rocket" }]);
           addSystemEvent(`${player.country} запускает ракету по ${cellTargetName(target, playerId)}.`, { sound: "alert" });
         }
@@ -6644,7 +6822,9 @@ function tryBotShoot(playerId) {
         const lossSnapshot = armyGoldSnapshot();
         const blasts = [];
         for (const cell of mlrsSalvoCells(target)) {
+          const techBefore = hostileTechUnitCount(playerId, cell);
           damageMlrsCell(playerId, cell);
+          emitTechDestroyedIfChanged(techBefore, cell, playerId);
           pruneWeaponCooldowns(cell);
           blasts.push({ x: cell.x, y: cell.y, kind: "mlrs" });
         }
@@ -6652,6 +6832,9 @@ function tryBotShoot(playerId) {
         applyArmyLossEffects(lossSnapshot, playerId);
         emitSfx("shot", from.x, from.y, { weapon: "mlrs", playerId });
         emitExplosions(blasts);
+        for (const blast of blasts) {
+          emitSfx("rszo_hit", blast.x, blast.y, { playerId });
+        }
         addSystemEvent(`${player.country} накрывает ${cellTargetName(target, playerId)} залпом РСЗО.`, { sound: "alert" });
         touchMap();
         return true;
@@ -7139,6 +7322,7 @@ function captureCell(playerId, cell) {
   cell.owner = playerId;
   if (previousOwner !== playerId) {
     emitReport(cell.x, cell.y, previousOwner ? "Территория захвачена" : "Нейтральная клетка занята", "capture");
+    if (previousOwner) emitSfx("attack", cell.x, cell.y, { playerId });
   }
   for (const enemyId of hostilePlayerIds(playerId)) {
     clearWeaponCooldowns(cell, enemyId);
@@ -7201,6 +7385,7 @@ function destroyBuilding(cell, attackerId = null) {
 
   cell.building = null;
   if (building.type === "ammoDepot" && ownerId) clampAmmoToCapacity(ownerId);
+  emitSfx("d_house", cell.x, cell.y, { playerId: attackerId || ownerId || null });
   emitReport(cell.x, cell.y, building.type === "hq" ? "Штаб потерян" : "Постройка уничтожена", "loss");
 }
 
@@ -7264,6 +7449,27 @@ function interceptDronesEnteringCell(playerId, cell, moved) {
   return true;
 }
 
+function interceptShahedsEnteringCell(playerId, cell, moved) {
+  if (!cell || (moved.saboteur || 0) <= 0) return false;
+  const blocker = findHostileAirDefense(playerId, cell.x, cell.y, 4);
+  if (!blocker) return false;
+  const lossSnapshot = armyGoldSnapshot();
+  const blockerOwner = airDefenseOwnerAtCell(blocker, playerId);
+  moved.saboteur = 0;
+  applyArmyLossEffects(lossSnapshot, blockerOwner || playerId);
+  emitSfx("shot", blocker.x, blocker.y, { weapon: "aa", playerId: blockerOwner || playerId });
+  emitExplosions([{ x: cell.x, y: cell.y, kind: "aa" }]);
+  addSystemEvent(`ПВО сбивает шахед у ${cell.x + 1}:${cell.y + 1}.`, { sound: "alert" });
+  return true;
+}
+
+function airDefenseOwnerAtCell(cell, attackerId) {
+  return hostilePlayerIds(attackerId).find((id) => {
+    const units = unitsFor(cell, id);
+    return (units.aa || 0) > 0 || (units.aaPlus || 0) > 0;
+  }) || null;
+}
+
 function interceptHostileDronesNearEw(playerId, ewCell) {
   let intercepted = false;
   const blasts = [];
@@ -7279,6 +7485,26 @@ function interceptHostileDronesNearEw(playerId, ewCell) {
   });
   if (intercepted) {
     emitSfx("shot", ewCell.x, ewCell.y, { weapon: "aa", playerId });
+    emitExplosions(blasts);
+  }
+  return intercepted;
+}
+
+function interceptHostileShahedsNearAirDefense(playerId, aaCell) {
+  let intercepted = false;
+  const blasts = [];
+  forEachCell((cell) => {
+    if (distance(cell, aaCell) > 4) return;
+    for (const enemyId of hostilePlayerIds(playerId)) {
+      const units = unitsFor(cell, enemyId);
+      if ((units.saboteur || 0) <= 0) continue;
+      units.saboteur = 0;
+      intercepted = true;
+      blasts.push({ x: cell.x, y: cell.y, kind: "aa" });
+    }
+  });
+  if (intercepted) {
+    emitSfx("shot", aaCell.x, aaCell.y, { weapon: "aa", playerId });
     emitExplosions(blasts);
   }
   return intercepted;
@@ -7334,7 +7560,7 @@ function findRecruitCell(playerId, unitKind = "") {
            viable[0];
   }
 
-  if (["tank", "mlrs", "drone"].includes(unitKind)) {
+  if (["tank", "mlrs", "drone", "saboteur"].includes(unitKind)) {
     return viable.find((cell) => cell.building?.type === "factory") || viable[0];
   }
   return viable.find((cell) => cell.building?.type === "barracks") || viable[0];
@@ -7402,6 +7628,16 @@ function playerHasBuilding(playerId, type) {
   forEachCell((cell) => {
     if (!found && cell.building?.owner === playerId && cell.building.type === type) {
       found = true;
+    }
+  });
+  return found;
+}
+
+function factoryLaunchCell(playerId) {
+  let found = null;
+  forEachCell((cell) => {
+    if (!found && cell.building?.owner === playerId && cell.building.type === "factory") {
+      found = cell;
     }
   });
   return found;
@@ -7498,6 +7734,23 @@ function clampAmmoToCapacity(playerId) {
 
 function armyGoldSnapshot() {
   return Object.fromEntries(PLAYER_IDS.map((id) => [id, armyGoldValue(id)]));
+}
+
+function hostileTechUnitCount(playerId, cell) {
+  if (!cell) return 0;
+  let count = 0;
+  for (const enemyId of hostilePlayerIds(playerId)) {
+    const units = unitsFor(cell, enemyId);
+    for (const unit of TECH_SFX_UNITS) {
+      count += units[unit] || 0;
+    }
+  }
+  return count;
+}
+
+function emitTechDestroyedIfChanged(before, cell, playerId) {
+  if (!cell || hostileTechUnitCount(playerId, cell) >= before) return;
+  emitSfx("d_tehnika", cell.x, cell.y, { playerId });
 }
 
 function armyGoldValue(playerId) {

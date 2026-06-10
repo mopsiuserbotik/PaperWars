@@ -1,4 +1,4 @@
-const CACHE_NAME = "paper-wars-shell-v4";
+const CACHE_NAME = "paper-wars-shell-v7";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -6,10 +6,29 @@ const APP_SHELL = [
   "/client.js",
   "/manifest.webmanifest",
   "/icons/icon.svg",
-  "/music/theme.mp3",
-  "/music/fail.mp3",
-  "/music/war.mp3",
-  "/music/win.mp3"
+  "/sfx/attack.mp3",
+  "/sfx/drone.mp3",
+  "/sfx/d_house.mp3",
+  "/sfx/d_tehnika.mp3",
+  "/sfx/fail.mp3",
+  "/sfx/kreyser.mp3",
+  "/sfx/money.mp3",
+  "/sfx/osechka.mp3",
+  "/sfx/pvo.mp3",
+  "/sfx/rain.mp3",
+  "/sfx/raketa.mp3",
+  "/sfx/rpg.mp3",
+  "/sfx/rszo.mp3",
+  "/sfx/rszo_hit.mp3",
+  "/sfx/rszo_shot.mp3",
+  "/sfx/shahed.mp3",
+  "/sfx/soyuz.mp3",
+  "/sfx/stroyka.mp3",
+  "/sfx/tank.mp3",
+  "/sfx/tank_shot.mp3",
+  "/sfx/war.mp3",
+  "/sfx/win.mp3",
+  "/sfx/yaderka.mp3"
 ];
 
 self.addEventListener("install", (event) => {

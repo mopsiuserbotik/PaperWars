@@ -670,13 +670,14 @@ h1 {
 }
 
 .map.event-rain::before {
+  inset: -48px;
+  opacity: 0.34;
   background:
-    radial-gradient(ellipse at center, rgba(115, 185, 235, 0.7) 0 1.3px, transparent 1.9px),
-    radial-gradient(ellipse at center, rgba(40, 120, 190, 0.46) 0 1px, transparent 1.7px),
-    radial-gradient(ellipse at center, rgba(180, 225, 255, 0.62) 0 1.1px, transparent 1.8px);
-  background-size: 22px 30px, 34px 42px, 46px 58px;
-  background-position: 0 -30px, 12px -42px, 28px -58px;
-  animation: rainDrops 620ms linear infinite;
+    repeating-linear-gradient(105deg, rgba(125, 190, 235, 0.58) 0 2px, transparent 2px 18px),
+    linear-gradient(rgba(86, 145, 190, 0.08), rgba(45, 95, 145, 0.08));
+  background-size: 24px 36px, 100% 100%;
+  will-change: transform;
+  animation: rainDrops 980ms linear infinite;
 }
 
 .map.event-drought::before {
@@ -876,8 +877,8 @@ h1 {
 }
 
 @keyframes rainDrops {
-  from { background-position: 0 -30px, 12px -42px, 28px -58px; }
-  to { background-position: -16px 30px, -10px 42px, 4px 58px; }
+  from { transform: translate3d(0, -32px, 0); }
+  to { transform: translate3d(-24px, 32px, 0); }
 }
 
 @keyframes heatPulse {
@@ -966,10 +967,6 @@ h1 {
   top: 12px;
 }
 
-.cell.has-revealed-saboteur .units {
-  animation: saboteur-alert 650ms steps(1, end) infinite;
-}
-
 .unit-icon-text {
   display: inline-block;
   line-height: 1;
@@ -993,17 +990,6 @@ h1 {
   50% {
     opacity: 1;
     transform: scale(1);
-  }
-}
-
-@keyframes saboteur-alert {
-  0%, 49% {
-    color: #d01818;
-    background: rgba(255, 255, 255, 0.86);
-  }
-  50%, 100% {
-    color: #050505;
-    background: rgba(255, 255, 255, 0.7);
   }
 }
 
@@ -1072,7 +1058,8 @@ h1 {
 
 .map-boom,
 .map-smoke,
-.shot-flash {
+.shot-flash,
+.map-flight {
   position: absolute;
   pointer-events: none;
   transform: translate(-50%, -50%);
@@ -1253,6 +1240,66 @@ h1 {
     radial-gradient(circle, rgba(255,255,255,0.96) 0 10%, rgba(255,190,56,0.72) 24%, rgba(255,94,34,0.5) 42%, transparent 68%);
 }
 
+.map-flight {
+  z-index: 88;
+  left: var(--from-left);
+  top: var(--from-top);
+  width: clamp(20px, 2.8vw, 38px);
+  height: clamp(20px, 2.8vw, 38px);
+  display: grid;
+  place-items: center;
+  filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.28));
+  animation: shahedFlight var(--effect-duration, 17040ms) linear forwards;
+}
+
+.map-flight::before {
+  content: "🛩";
+  font-size: clamp(18px, 2.5vw, 34px);
+  line-height: 1;
+  transform: rotate(var(--flight-angle, 90deg));
+}
+
+.map-flight--nuke {
+  z-index: 92;
+  width: clamp(28px, 3.6vw, 48px);
+  height: clamp(28px, 3.6vw, 48px);
+  filter: drop-shadow(0 4px 5px rgba(0, 0, 0, 0.32));
+}
+
+.map-flight--nuke::before {
+  content: "☢";
+  position: relative;
+  z-index: 2;
+  display: grid;
+  width: 1.2em;
+  height: 1.2em;
+  place-items: center;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff6a8 0 34%, #f2c84d 42% 64%, #313131 68% 100%);
+  color: #161616;
+  font-size: clamp(17px, 2.6vw, 32px);
+  font-weight: 900;
+  transform: rotate(var(--flight-angle, 90deg));
+}
+
+.map-flight--nuke::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 1;
+  width: clamp(14px, 2vw, 26px);
+  height: clamp(48px, 7vw, 92px);
+  border-radius: 50%;
+  background:
+    radial-gradient(ellipse at 50% 18%, rgba(245, 245, 230, 0.62), transparent 38%),
+    radial-gradient(ellipse at 50% 58%, rgba(110, 116, 116, 0.38), transparent 70%);
+  filter: blur(3px);
+  opacity: 0.72;
+  transform: translate(-50%, -6%) rotate(var(--flight-angle, 90deg)) translateY(42%);
+  transform-origin: 50% 0;
+}
+
 @keyframes shockwave {
   from {
     opacity: 0.95;
@@ -1404,6 +1451,27 @@ h1 {
   100% {
     opacity: 0;
     transform: translate(-50%, -50%) scale(1.8);
+  }
+}
+
+@keyframes shahedFlight {
+  0% {
+    left: var(--from-left);
+    top: var(--from-top);
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.76);
+  }
+  4% {
+    opacity: 1;
+  }
+  94% {
+    opacity: 1;
+  }
+  100% {
+    left: var(--to-left);
+    top: var(--to-top);
+    opacity: 0.3;
+    transform: translate(-50%, -50%) scale(1.05);
   }
 }
 
@@ -1963,23 +2031,23 @@ h1 {
   bottom: calc(var(--controls-height) + 12px);
   z-index: 24;
   display: grid;
-  grid-template-columns: repeat(3, 42px);
-  grid-template-rows: repeat(3, 40px);
-  gap: 4px;
+  grid-template-columns: repeat(3, 84px);
+  grid-template-rows: repeat(3, 80px);
+  gap: 8px;
   pointer-events: auto;
 }
 
 .map-move-button {
   display: grid;
-  width: 42px;
-  height: 40px;
+  width: 84px;
+  height: 80px;
   place-items: center;
   border: 1px solid var(--paper-line);
   border-radius: 8px;
   background: var(--panel-solid);
   color: var(--ink);
   box-shadow: var(--soft-shadow);
-  font-size: 18px;
+  font-size: 36px;
   font-weight: 900;
   line-height: 1;
 }
@@ -2513,15 +2581,15 @@ h1 {
   .map-move-pad {
     left: max(8px, env(safe-area-inset-left));
     bottom: calc(var(--controls-height) + 8px);
-    grid-template-columns: repeat(3, 34px);
-    grid-template-rows: repeat(3, 32px);
-    gap: 3px;
+    grid-template-columns: repeat(3, 68px);
+    grid-template-rows: repeat(3, 64px);
+    gap: 6px;
   }
 
   .map-move-button {
-    width: 34px;
-    height: 32px;
-    font-size: 16px;
+    width: 68px;
+    height: 64px;
+    font-size: 32px;
   }
 
   .chat-drawer {

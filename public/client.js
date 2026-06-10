@@ -21,13 +21,13 @@ const UNIT_DEFS = {
   inf: { name: "Пехота", icon: "⚔️", cost: "1👤 2💰 · моб. 1💰" },
   rpg: { name: "Гранатометчик", icon: "🎯", cost: "1👤 6💰 1⚙️ 1💣" },
   tank: { name: "Танк", icon: "🚜", cost: "2👤 18💰 8⚙️" },
-  rocket: { name: "Ракета", icon: "🚀", cost: "1👤 28💰 12⚙️ · 3с" },
-  aa: { name: "ПВО", icon: "🛡", cost: "1👤 22💰 8⚙️ · 3с" },
-  aaPlus: { name: "ПВО+", icon: "🛰", cost: "2👤 55💰 18⚙️ 4☢ · 3с" },
-  ew: { name: "РЭБ", icon: "📡", cost: "10💰 2⚙️ · 3с" },
+  rocket: { name: "Ракета", icon: "🚀", cost: "1👤 28💰 12⚙️ · 1.5с" },
+  aa: { name: "ПВО", icon: "🛡", cost: "1👤 22💰 8⚙️ · 1.5с" },
+  aaPlus: { name: "ПВО+", icon: "🛰", cost: "2👤 55💰 18⚙️ 4☢ · 1.5с" },
+  ew: { name: "РЭБ", icon: "📡", cost: "10💰 2⚙️ · 1.5с" },
   mlrs: { name: "РСЗО", icon: "🚚", cost: "3👤 70💰 28⚙️" },
   drone: { name: "Дрон", icon: "🛸", cost: "16💰 4⚙️ 3💣" },
-  saboteur: { name: "Диверсант", icon: "🕵", cost: "1👤 45💰 6⚙️ 4💣 · кд" },
+  saboteur: { name: "Шахед", icon: "🛩", cost: "нужен 🏭 · 1👤 45💰 6⚙️ 4💣 · кд" },
   boat: { name: "Лодка", icon: "🚤", cost: "1👤 12💰 5⚙️" },
   cruiser: { name: "Крейсер", icon: "🚢", cost: "2👤 55💰 24⚙️ · у порта" },
   nuke: { name: "Ядерка", icon: "☢️", cost: "нужен ☢🏭 · 90💰 30⚙️ 20☢ 3👤" }
@@ -78,7 +78,7 @@ const UNIT_MARKS = {
   ew: "РЭБ",
   mlrs: "РСЗО",
   drone: "Дрон",
-  saboteur: "Диверсант",
+  saboteur: "Шахед",
   boat: "Лодка",
   cruiser: "Крейсер"
 };
@@ -89,7 +89,7 @@ const MOVE_TOGGLE_LABELS = {
   ew: "РЭБ",
   cruiser: "Крейсер",
   drone: "Дрон",
-  saboteur: "Диверсант"
+  saboteur: "Шахед"
 };
 const SCRAPPABLE_UNITS = ["tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "boat", "cruiser"];
 const DEV_CODE = "6686";
@@ -170,12 +170,10 @@ const els = {
   lobbySubmit: document.querySelector("#lobbySubmit"),
   lobbyNotice: document.querySelector("#lobbyNotice"),
   connectionStatus: document.querySelector("#connectionStatus"),
-  lobbyMusic: document.querySelector("#lobbyMusic"),
   lobbyThemeButton: document.querySelector("#lobbyThemeButton"),
   map: document.querySelector("#map"),
   mapMovePad: document.querySelector("#mapMovePad"),
   mapTools: document.querySelector("#mapTools"),
-  gameMusic: document.querySelector("#gameMusic"),
   statsButton: document.querySelector("#statsButton"),
   quickStatus: document.querySelector("#quickStatus"),
   eventBanner: document.querySelector("#eventBanner"),
@@ -234,6 +232,7 @@ let explosions = [];
 let nukeSmokes = [];
 let impactSmokes = [];
 let shotEffects = [];
+let flightEffects = [];
 let toastTimer = null;
 let eventBannerTimer = null;
 let centeredHome = false;
@@ -259,17 +258,17 @@ let reconnectTimer = null;
 let reconnectAttempts = 0;
 let heartbeatTimer = null;
 let serverFull = false;
-let musicPlaylist = ["/music/theme.mp3"];
-let musicIndex = 0;
-let eventSfxSources = {
-  fail: "/music/fail.mp3",
-  war: "/music/war.mp3",
-  win: "/music/win.mp3"
-};
+const SFX_NAMES = [
+  "attack", "drone", "d_house", "d_tehnika", "fail", "kreyser", "money", "osechka", "pvo", "rain", "raketa",
+  "rpg", "rszo", "rszo_hit", "rszo_shot", "shahed", "soyuz", "stroyka", "tank", "tank_shot", "war", "win", "yaderka"
+];
+const POSITIONAL_VOLUME_EXEMPT = new Set(["fail", "money", "rain", "soyuz", "war", "win", "yaderka"]);
+let eventSfxSources = Object.fromEntries(SFX_NAMES.map((name) => [name, `/sfx/${name}.mp3`]));
 const eventSfxPlayers = {};
-let audioCtx = null;
 let sfxUnlocked = false;
 let lastExplosionSfxAt = 0;
+let lastNukeRequestAt = 0;
+let lastShahedRequestAt = 0;
 let pendingJoinPayload = null;
 let lastChatId = null;
 let mapBubbles = [];
@@ -285,13 +284,15 @@ let pinchStartDistance = 0;
 let pinchStartZoom = 1;
 
 const MAX_CLIENT_BUFFERED_BYTES = 64 * 1024;
-const MASTER_SFX_VOLUME = 0.52;
 const LOW_POWER_DEVICE = (navigator.hardwareConcurrency || 4) <= 4;
 const MAX_EXPLOSIONS_ON_MAP = LOW_POWER_DEVICE ? 18 : 32;
 const MAX_IMPACT_SMOKES_ON_MAP = LOW_POWER_DEVICE ? 20 : 40;
-const MAX_NUKE_SMOKES_ON_MAP = LOW_POWER_DEVICE ? 27 : 54;
+const MAX_NUKE_SMOKES_ON_MAP = LOW_POWER_DEVICE ? 18 : 36;
 const MAX_SHOTS_ON_MAP = LOW_POWER_DEVICE ? 8 : 12;
-const NUKE_SMOKE_MS = 12000;
+const NUKE_SMOKE_MS = 8500;
+const NUKE_CLIENT_THROTTLE_MS = 900;
+const SHAHED_CLIENT_THROTTLE_MS = 900;
+const SHAHED_FLIGHT_MS = 17040;
 const IMPACT_SMOKE_MS = {
   rpg: 1400,
   tank: 1500,
@@ -321,15 +322,9 @@ const EXPLOSION_MS = {
 const SHOT_EFFECT_MS = 520;
 const CLIENT_TOKEN = getClientToken();
 
-const music = new Audio();
-music.loop = false;
-music.preload = "none";
-music.volume = 0.34;
-
 applyTheme(loadTheme());
 connect();
 bindUi();
-loadMusicPlaylist();
 preloadEventSfx();
 registerServiceWorker();
 setInterval(updateLivePanels, 1000);
@@ -656,9 +651,6 @@ function bindUi() {
   els.modalLayer.addEventListener("change", handleModalChange);
 
   bindMapGestures();
-  els.lobbyMusic?.addEventListener("click", toggleMusic);
-  els.gameMusic?.addEventListener("click", toggleMusic);
-  music.addEventListener("ended", playNextMusic);
   els.continueBotsButton?.addEventListener("click", () => send({ type: "continueBots" }, { priority: true }));
   els.restartButton.addEventListener("click", () => send({ type: "restart" }, { priority: true }));
   document.addEventListener("pointerdown", unlockSfxAudio, { passive: true });
@@ -688,9 +680,6 @@ function handleServerMessage(message) {
   if (message.type === "hello") {
     me = message.playerId;
     spectator = message.spectator;
-    if (message.music) {
-      musicPlaylist = Array.isArray(message.music) && message.music.length ? message.music : [message.music].filter(Boolean);
-    }
     if (message.sfx) {
       updateEventSfxSources(message.sfx);
     }
@@ -735,6 +724,7 @@ function handleServerMessage(message) {
     nukeSmokes = [];
     impactSmokes = [];
     shotEffects = [];
+    flightEffects = [];
     hqRebuildEnds = {};
     unreadChatCount = 0;
     closeChat();
@@ -764,6 +754,7 @@ function handleServerMessage(message) {
     nukeSmokes = [];
     impactSmokes = [];
     shotEffects = [];
+    flightEffects = [];
     hqRebuildEnds = {};
     unreadChatCount = 0;
     closeChat();
@@ -797,6 +788,10 @@ function handleServerMessage(message) {
     }
   }
 
+  if (message.type === "flight") {
+    addFlightEffect(message);
+  }
+
   if (message.type === "explosions") {
     const now = Date.now();
     explosions.push(...message.explosions.map((explosion) => ({
@@ -811,7 +806,7 @@ function handleServerMessage(message) {
         for (let y = explosion.y - 1; y <= explosion.y + 1; y += 1) {
           for (let x = explosion.x - 1; x <= explosion.x + 1; x += 1) {
             if (x >= 0 && y >= 0 && x < (state?.width || 34) && y < (state?.height || 24)) {
-              nukeSmokes.push({ id: `${explosion.id}:${x}:${y}`, x, y, at: now, until: now + NUKE_SMOKE_MS });
+              upsertNukeSmoke({ id: `${explosion.id}:${x}:${y}`, x, y, at: now, until: now + NUKE_SMOKE_MS });
             }
           }
         }
@@ -878,6 +873,25 @@ function addShotEffect(detail) {
   });
   shotEffects = shotEffects.slice(-MAX_SHOTS_ON_MAP);
   refreshMapEffects(SHOT_EFFECT_MS);
+}
+
+function addFlightEffect(detail) {
+  if (!detail?.from || !detail?.to) return;
+  const now = Date.now();
+  const duration = Math.max(500, Number(detail.duration || SHAHED_FLIGHT_MS));
+  const effect = {
+    id: detail.id || `flight:${now}:${Math.random().toString(16).slice(2)}`,
+    kind: detail.kind || "flight",
+    from: { x: Number(detail.from.x), y: Number(detail.from.y) },
+    to: { x: Number(detail.to.x), y: Number(detail.to.y) },
+    at: now,
+    duration,
+    until: now + duration
+  };
+  if (!Number.isFinite(effect.from.x) || !Number.isFinite(effect.from.y) || !Number.isFinite(effect.to.x) || !Number.isFinite(effect.to.y)) return;
+  flightEffects.push(effect);
+  flightEffects = flightEffects.slice(-8);
+  refreshMapEffects(duration);
 }
 
 function refreshMapEffects(duration) {
@@ -1352,7 +1366,6 @@ function updateMapCell(entry, cell, context) {
   const hasBoom = context.boomByCell.has(`${cell.x}:${cell.y}`);
   const hasSmoke = context.smokeByCell.has(`${cell.x}:${cell.y}`);
   const bubble = mapBubbleForCell(cell, context.now);
-  const revealedSaboteur = visible && hasRevealedHostileSaboteur(cell);
   const className = [
     "cell",
     `terrain-${cell.terrain}`,
@@ -1360,7 +1373,6 @@ function updateMapCell(entry, cell, context) {
     bubble ? "has-bubble" : "",
     cell.building?.type === "bridge" ? "has-bridge" : "",
     cell.construction ? "has-construction" : "",
-    revealedSaboteur ? "has-revealed-saboteur" : "",
     hasBoom ? "has-boom" : "",
     hasSmoke ? "has-nuke-smoke" : "",
     !visible ? "is-fogged" : "",
@@ -1458,6 +1470,14 @@ function appendMapEffects(layer, now, width = state?.width || 34, height = state
     setEffectTiming(node, shot, SHOT_EFFECT_MS, now);
     layer.append(node);
   }
+
+  flightEffects = flightEffects.filter((flight) => flight.until > now);
+  for (const flight of flightEffects) {
+    const node = document.createElement("span");
+    node.className = `map-flight map-flight--${flight.kind || "flight"}`;
+    setFlightPath(node, flight, width, height, now);
+    layer.append(node);
+  }
 }
 
 function setCellRect(node, x, y, width, height) {
@@ -1476,6 +1496,23 @@ function setCellCenter(node, x, y, width, height, scale = 1) {
 
 function setEffectTiming(node, effect, duration, now) {
   const age = Math.max(0, now - (effect.at || now));
+  node.style.setProperty("--effect-duration", `${duration}ms`);
+  node.style.animationDelay = `-${Math.min(age, duration)}ms`;
+}
+
+function setFlightPath(node, effect, width, height, now) {
+  const duration = Math.max(1, effect.duration || SHAHED_FLIGHT_MS);
+  const age = Math.max(0, now - (effect.at || now));
+  const fromLeft = ((effect.from.x + 0.5) / width) * 100;
+  const fromTop = ((effect.from.y + 0.5) / height) * 100;
+  const toLeft = ((effect.to.x + 0.5) / width) * 100;
+  const toTop = ((effect.to.y + 0.5) / height) * 100;
+  const angle = Math.atan2(effect.to.y - effect.from.y, effect.to.x - effect.from.x) * 180 / Math.PI;
+  node.style.setProperty("--from-left", `${fromLeft}%`);
+  node.style.setProperty("--from-top", `${fromTop}%`);
+  node.style.setProperty("--to-left", `${toLeft}%`);
+  node.style.setProperty("--to-top", `${toTop}%`);
+  node.style.setProperty("--flight-angle", `${angle + 90}deg`);
   node.style.setProperty("--effect-duration", `${duration}ms`);
   node.style.animationDelay = `-${Math.min(age, duration)}ms`;
 }
@@ -1551,6 +1588,7 @@ function getMapRenderKey() {
   const smokeKey = nukeSmokes.map((smoke) => `${smoke.id}:${smoke.until}`).join("|");
   const impactSmokeKey = impactSmokes.map((smoke) => `${smoke.id}:${smoke.until}`).join("|");
   const shotEffectKey = shotEffects.map((effect) => `${effect.id}:${effect.until}`).join("|");
+  const flightEffectKey = flightEffects.map((effect) => `${effect.id}:${effect.until}`).join("|");
   const bubbleKey = mapBubbles.map((bubble) => `${bubble.id}:${bubble.until}`).join("|");
   const eventKey = `${state.activeEvent?.type || ""}:${state.pendingEvent?.type || ""}`;
   return [
@@ -1563,6 +1601,7 @@ function getMapRenderKey() {
     smokeKey,
     impactSmokeKey,
     shotEffectKey,
+    flightEffectKey,
     bubbleKey,
     eventKey
   ].join(";");
@@ -1576,7 +1615,7 @@ function getTargetHighlights() {
     addMoveTargets(getCell(pending.x, pending.y), highlights.move);
   } else if (!pending) {
     const selectedCell = selected ? getCell(selected.x, selected.y) : null;
-    if ((controlsCell(selectedCell) || (selectedCell?.terrain === "water" && hasOwnVessel(selectedCell)) || (selectedCell?.units?.[me]?.drone || 0) > 0 || (selectedCell?.units?.[me]?.saboteur || 0) > 0) && movablePower(selectedCell.units?.[me] || {}) > 0) {
+    if ((controlsCell(selectedCell) || (selectedCell?.terrain === "water" && hasOwnVessel(selectedCell)) || (selectedCell?.units?.[me]?.drone || 0) > 0) && movablePower(selectedCell.units?.[me] || {}) > 0) {
       addMoveTargets(selectedCell, highlights.move);
     }
   }
@@ -1585,7 +1624,7 @@ function getTargetHighlights() {
     addAttackTargets(getCell(pending.x, pending.y), pending.action, highlights.attack);
   }
 
-  if (pending?.action === "nuke") {
+  if (pending?.action === "nuke" || pending?.action === "shahed") {
     for (const row of state.map) {
       for (const cell of row) {
         highlights.attack.add(cellKey(cell));
@@ -1614,7 +1653,7 @@ function addMoveTargets(source, targets) {
 
 function canMoveFromCell(cell, ownUnits = cell?.units?.[me] || {}) {
   return Boolean(cell
-    && (controlsCell(cell) || (cell.terrain === "water" && hasOwnVessel(cell)) || (ownUnits.drone || 0) > 0 || (ownUnits.saboteur || 0) > 0)
+    && (controlsCell(cell) || (cell.terrain === "water" && hasOwnVessel(cell)) || (ownUnits.drone || 0) > 0)
     && movablePower(ownUnits) > 0);
 }
 
@@ -1648,8 +1687,8 @@ function moveRequest(source, ownUnits) {
   const mlrs = moveMlrs && (ownUnits.mlrs || 0) > 0;
   const cruiser = moveCruiser && source?.terrain === "water" && (ownUnits.cruiser || 0) > 0;
   const drone = moveDrone && (ownUnits.drone || 0) > 0 ? (ownUnits.drone || 0) : 0;
-  const saboteur = moveSaboteur && (ownUnits.saboteur || 0) > 0 ? (ownUnits.saboteur || 0) : 0;
-  const rpgBlockedByCovert = (drone || saboteur) && inf <= 0 && !tank && !mlrs && !cruiser;
+  const saboteur = 0;
+  const rpgBlockedByCovert = drone && inf <= 0 && !tank && !mlrs && !cruiser;
   const rpg = moveRpg && !rpgBlockedByCovert ? Math.min(ownUnits.rpg || 0, 1) : 0;
   const ewEscort = inf + rpg + (tank ? 1 : 0) + (mlrs ? 1 : 0);
   const ew = moveEw && (ownUnits.ew || 0) > 0 && ewEscort > 0 ? 1 : 0;
@@ -1672,11 +1711,13 @@ function moveRequest(source, ownUnits) {
 function canMoveInto(target, source, request) {
   if (!target) return false;
   const rawWater = target.terrain === "water" && target.building?.type !== "bridge";
+  const airMove = request.drone || request.saboteur;
+  const landMove = request.inf + request.rpg + (request.tank ? 1 : 0) + (request.mlrs ? 1 : 0) + request.ew;
   if (rawWater) {
-    if (request.saboteur) return false;
+    if (landMove > 0 && !request.boat && !request.cruiser) return false;
     if (request.ew) return false;
-    if (hasHostileCruiser(target) && (request.boat || request.cruiser || !request.drone)) return false;
-    if (!request.drone && !request.boat && !request.cruiser && !hasOwnVessel(target)) return false;
+    if (hasHostileCruiser(target) && (request.boat || request.cruiser || !airMove)) return false;
+    if (!airMove && !request.boat && !request.cruiser && !hasOwnVessel(target)) return false;
   } else if (source?.terrain === "water" && hasOwnVessel(source) && !request.drone && !request.saboteur) {
     if (request.inf + request.rpg <= 0) return false;
     if (!isPassableCell(target)) return false;
@@ -1695,7 +1736,6 @@ function canMoveInto(target, source, request) {
 }
 
 function renderPanels() {
-  updateTopButtons();
   renderQuickStatus();
 }
 
@@ -1861,7 +1901,7 @@ function renderMapMovePad() {
 
 function renderTroopsTab() {
   const buttons = Object.entries(UNIT_DEFS).map(([kind, unit]) => {
-    const command = kind === "nuke" ? "nuke" : "hire";
+    const command = kind === "nuke" ? "nuke" : kind === "saboteur" ? "shahed" : "hire";
     return commandButton(command, kind, unit.name, unit.cost);
   }).join("");
   els.tabContent.innerHTML = `<div class="command-grid">${buttons}</div>`;
@@ -1869,7 +1909,7 @@ function renderTroopsTab() {
 
 function renderBuildingsTab() {
   const buttons = Object.entries(BUILDING_DEFS).map(([kind, building]) => (
-    commandButton("build", kind, `${building.icon} ${building.name}`, `${building.cost} · 3с`)
+    commandButton("build", kind, `${building.icon} ${building.name}`, `${building.cost} · 1.5с`)
   )).join("");
   els.tabContent.innerHTML = `<div class="command-grid">${buttons}</div>`;
 }
@@ -1921,7 +1961,6 @@ function actionsTroopsHtml({ cell, ownUnits, mobilizationOn }) {
         ${moveToggleHtml("ew", moveEw, (ownUnits.ew || 0) > 0 && ((ownUnits.inf || 0) > 0 || (ownUnits.rpg || 0) > 0 || (ownUnits.tank || 0) > 0 || (ownUnits.mlrs || 0) > 0))}
         ${moveToggleHtml("cruiser", moveCruiser, (ownUnits.cruiser || 0) > 0)}
         ${moveToggleHtml("drone", moveDrone, (ownUnits.drone || 0) > 0)}
-        ${moveToggleHtml("saboteur", moveSaboteur, (ownUnits.saboteur || 0) > 0)}
       </div>
       <div class="command-grid">
         ${actionCommandButton("rpg", cell, ownUnits, `${unitIconHtml("rpg")} РПГ`, "рядом")}
@@ -1930,7 +1969,6 @@ function actionsTroopsHtml({ cell, ownUnits, mobilizationOn }) {
         ${actionCommandButton("mlrs", cell, ownUnits, `${unitIconHtml("mlrs")} Залп`, "R4")}
         ${actionCommandButton("cruiser", cell, ownUnits, `${unitIconHtml("cruiser")} Залп`, "линия 3")}
         ${actionCommandButton("detonateDrone", cell, ownUnits, `${unitIconHtml("drone")} Детонация`, "эта клетка")}
-        ${actionCommandButton("detonateSaboteur", cell, ownUnits, "🕵 Взрыв", "постройка")}
         ${hasOwnBuilding("tck") ? commandButton("mobilize", "", mobilizationOn ? "📋 Выкл. моб." : "📋 Мобилизация", mobilizationOn ? "включено" : "выключено") : ""}
         ${commandButton("cancel", "", "× Сброс", "цель")}
       </div>
@@ -2001,7 +2039,7 @@ function syncMoveOptions(cell, ownUnits = {}) {
     moveEw = (ownUnits.ew || 0) > 0 && ((ownUnits.inf || 0) > 0 || (ownUnits.rpg || 0) > 0 || (ownUnits.tank || 0) > 0 || (ownUnits.mlrs || 0) > 0);
     moveCruiser = (ownUnits.cruiser || 0) > 0;
     moveDrone = (ownUnits.drone || 0) > 0 && (ownUnits.inf || 0) <= 0 && (ownUnits.rpg || 0) <= 0 && !ownUnits.tank && !ownUnits.mlrs;
-    moveSaboteur = (ownUnits.saboteur || 0) > 0 && (ownUnits.inf || 0) <= 0 && (ownUnits.rpg || 0) <= 0 && !ownUnits.tank && !ownUnits.mlrs && !ownUnits.drone;
+    moveSaboteur = false;
     return;
   }
 
@@ -2012,7 +2050,7 @@ function syncMoveOptions(cell, ownUnits = {}) {
   if (!ownUnits.ew || ((ownUnits.inf || 0) <= 0 && (ownUnits.rpg || 0) <= 0 && !ownUnits.tank && !ownUnits.mlrs)) moveEw = false;
   if (!ownUnits.cruiser) moveCruiser = false;
   if (!ownUnits.drone) moveDrone = false;
-  if (!ownUnits.saboteur) moveSaboteur = false;
+  moveSaboteur = false;
 }
 
 function renderStatsOverlay() {
@@ -2115,7 +2153,7 @@ function statsUnitBreakdown(stats = {}) {
     ["РЭБ", stats.ew],
     ["РСЗО", stats.mlrs],
     ["Дроны", stats.drone],
-    ["Диверсанты", stats.saboteur],
+    ["Шахеды", stats.saboteur],
     ["Лодки", stats.boat],
     ["Крейсеры", stats.cruiser]
   ].filter(([, value]) => value > 0);
@@ -2429,6 +2467,17 @@ function closeModal() {
   els.modalLayer.innerHTML = "";
 }
 
+function upsertNukeSmoke(nextSmoke) {
+  const existing = nukeSmokes.find((smoke) => smoke.x === nextSmoke.x && smoke.y === nextSmoke.y);
+  if (existing) {
+    existing.id = nextSmoke.id;
+    existing.at = nextSmoke.at;
+    existing.until = nextSmoke.until;
+    return;
+  }
+  nukeSmokes.push(nextSmoke);
+}
+
 function applyTrollEffect(troll = {}) {
   const type = troll.type || "";
   if (type === "adLoan") {
@@ -2680,6 +2729,11 @@ function handleCommand(command, kind, data = {}) {
     renderGame();
     return;
   }
+  if (command === "shahed") {
+    pending = { action: "shahed" };
+    renderGame();
+    return;
+  }
   if (command === "demolish") {
     const cell = requireSelected();
     if (!cell) return;
@@ -2800,7 +2854,9 @@ function handleCellTap(x, y) {
 
   if (pending) {
     if (pending.action === "nuke") {
-      send({ type: "action", action: "nuke", tx: x, ty: y }, { priority: true });
+      sendNukeStrike(x, y);
+    } else if (pending.action === "shahed") {
+      sendShahedStrike(x, y);
     } else if (pending.action === "move") {
       sendMove(getCell(pending.x, pending.y), x, y);
     } else {
@@ -2819,6 +2875,24 @@ function handleCellTap(x, y) {
   renderGame();
 }
 
+function sendNukeStrike(tx, ty) {
+  const now = Date.now();
+  if (now - lastNukeRequestAt < NUKE_CLIENT_THROTTLE_MS) {
+    return false;
+  }
+  lastNukeRequestAt = now;
+  return send({ type: "action", action: "nuke", tx, ty }, { priority: true });
+}
+
+function sendShahedStrike(tx, ty) {
+  const now = Date.now();
+  if (now - lastShahedRequestAt < SHAHED_CLIENT_THROTTLE_MS) {
+    return false;
+  }
+  lastShahedRequestAt = now;
+  return send({ type: "action", action: "shahed", tx, ty }, { priority: true });
+}
+
 function requireSelected() {
   if (!selected) {
     showToast("Сначала тапни клетку.");
@@ -2831,7 +2905,7 @@ function requireOwnSelected() {
   const cell = requireSelected();
   if (!cell) return null;
   const ownUnits = cell.units?.[me] || {};
-  if (!controlsCell(cell) && !(cell.terrain === "water" && hasOwnVessel(cell)) && (ownUnits.drone || 0) <= 0 && (ownUnits.saboteur || 0) <= 0) {
+  if (!controlsCell(cell) && !(cell.terrain === "water" && hasOwnVessel(cell)) && (ownUnits.drone || 0) <= 0) {
     showToast("Марш начинается только со своей клетки или своего корабля.");
     return null;
   }
@@ -2867,7 +2941,7 @@ function sendMove(source, tx, ty) {
     mlrs: moveMlrs && ownUnits.mlrs > 0,
     ew: rawWaterTarget ? 0 : request.ew,
     drone: moveDrone ? (ownUnits.drone || 0) : 0,
-    saboteur: moveSaboteur ? (ownUnits.saboteur || 0) : 0,
+    saboteur: 0,
     boat: boatSails && !cruiserSails,
     cruiser: cruiserSails
   }, { priority: true });
@@ -2876,6 +2950,7 @@ function sendMove(source, tx, ty) {
 function pendingLabel() {
   if (!pending) return "";
   if (pending.action === "nuke") return "☢ выбери точку ядерного удара";
+  if (pending.action === "shahed") return "🛩 выбери цель Шахеда";
   const labels = { move: "марш", rpg: "выстрел из РПГ", tank: "танковый выстрел", rocket: "ракетный удар", mlrs: "залп РСЗО", cruiser: "залп крейсера" };
   return `${labels[pending.action]} · тапни цель`;
 }
@@ -3134,7 +3209,7 @@ function relationLabel(targetId) {
 
 function formatOtherUnits(cell) {
   return otherPlayerIds()
-    .map((id) => formatUnits(cell.units?.[id] || {}, !canRevealHostileSaboteur(cell, id)))
+    .map((id) => formatUnits(cell.units?.[id] || {}))
     .filter(Boolean)
     .join("");
 }
@@ -3169,12 +3244,11 @@ function compactUnitsText(cell) {
   return mine || enemy;
 }
 
-function compactUnits(units, hideSaboteur = false) {
+function compactUnits(units) {
   const parts = [];
   if (units.inf) parts.push(`${UNIT_MARKS.inf} ${units.inf}`);
   if (units.rpg) parts.push(`${UNIT_MARKS.rpg} ${units.rpg}`);
   for (const key of ["tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "saboteur", "boat", "cruiser"]) {
-    if (hideSaboteur && key === "saboteur") continue;
     if (units[key]) parts.push(key === "drone" || key === "saboteur" ? `${UNIT_MARKS[key]} ${units[key]}` : UNIT_MARKS[key]);
   }
   return parts.join(" ");
@@ -3182,17 +3256,9 @@ function compactUnits(units, hideSaboteur = false) {
 
 function compactOtherUnits(cell) {
   return otherPlayerIds()
-    .map((id) => compactUnits(cell.units?.[id] || {}, !canRevealHostileSaboteur(cell, id)))
+    .map((id) => compactUnits(cell.units?.[id] || {}))
     .filter(Boolean)
     .join("/");
-}
-
-function canRevealHostileSaboteur(cell, playerId) {
-  return Boolean(cell && controlsCell(cell) && hasOwnBuilding("counterIntel") && relationStatus(playerId) === "war");
-}
-
-function hasRevealedHostileSaboteur(cell) {
-  return otherPlayerIds().some((id) => canRevealHostileSaboteur(cell, id) && (cell.units?.[id]?.saboteur || 0) > 0);
 }
 
 function cellTooltip(cell) {
@@ -3217,7 +3283,7 @@ function defaultMoveInf(units) {
 }
 
 function movablePower(units) {
-  return (units.inf || 0) + (units.rpg || 0) + (units.tank || 0) + (units.mlrs || 0) + (units.drone || 0) + (units.saboteur || 0) + (units.boat || 0) + (units.cruiser || 0);
+  return (units.inf || 0) + (units.rpg || 0) + (units.tank || 0) + (units.mlrs || 0) + (units.drone || 0) + (units.boat || 0) + (units.cruiser || 0);
 }
 
 function hasOwnVessel(cell) {
@@ -3292,7 +3358,7 @@ function findHomeCell() {
   return null;
 }
 
-function formatUnits(units, hideSaboteur = false) {
+function formatUnits(units) {
   const parts = [];
   if (units.inf) parts.push(`${units.inf}⚔️`);
   if (units.rpg) parts.push(`${units.rpg} РПГ`);
@@ -3303,7 +3369,7 @@ function formatUnits(units, hideSaboteur = false) {
   if (units.ew) parts.push("📡");
   if (units.mlrs) parts.push("🚚");
   if (units.drone) parts.push(`${units.drone}🛸`);
-  if (units.saboteur && !hideSaboteur) parts.push(`${units.saboteur}🕵`);
+  if (units.saboteur) parts.push(`${units.saboteur}🛩`);
   if (units.boat) parts.push("🚤");
   if (units.cruiser) parts.push("🚢");
   return parts.join(" ");
@@ -3486,43 +3552,34 @@ function updateLivePanels() {
   if (statsOpen) renderStatsOverlay();
 }
 
-function getSfxContext() {
-  if (audioCtx) return audioCtx;
-  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-  if (!AudioContextCtor) return null;
-  audioCtx = new AudioContextCtor();
-  return audioCtx;
-}
-
 function unlockSfxAudio() {
-  const ctx = getSfxContext();
-  if (!ctx) return;
   sfxUnlocked = true;
-  if (ctx.state === "suspended") {
-    ctx.resume().catch(() => {});
-  }
 }
 
 function playSfx(name, detail = {}) {
-  if (eventSfxSources[name]) {
-    playEventSfx(name);
-    return;
+  const resolved = resolveSfxName(name, detail);
+  if (eventSfxSources[resolved]) {
+    playEventSfx(resolved, detail);
   }
+}
 
-  const ctx = getSfxContext();
-  if (!ctx || !sfxUnlocked) return;
-  if (ctx.state === "suspended") {
-    ctx.resume().catch(() => {});
+function resolveSfxName(name, detail = {}) {
+  if (name === "shot") {
+    return {
+      aa: "pvo",
+      cruiser: "kreyser",
+      drone: "drone",
+      mlrs: "rszo_shot",
+      rpg: "rpg",
+      saboteur: "shahed",
+      tank: "tank_shot"
+    }[detail.weapon] || "";
   }
-
-  if (name === "hire") playHireSfx(ctx, detail);
-  if (name === "demolish") playDemolishSfx(ctx);
-  if (name === "diplomacy") playDiplomacySfx(ctx);
-  if (name === "alert") playAlertSfx(ctx);
-  if (name === "shot") playShotSfx(ctx, detail.weapon);
-  if (name === "misfire") playMisfireSfx(ctx);
-  if (name === "explosion") playExplosionSfx(ctx, detail.size);
-  if (name === "nuke") playNukeSfx(ctx);
+  return {
+    demolish: "d_house",
+    misfire: "osechka",
+    nuke: "yaderka"
+  }[name] || name;
 }
 
 function updateEventSfxSources(sfx = {}) {
@@ -3548,16 +3605,46 @@ function preloadEventSfx() {
   }
 }
 
-function playEventSfx(name) {
+function playEventSfx(name, detail = {}) {
   if (!sfxUnlocked) return;
   const src = eventSfxSources[name];
   if (!src) return;
-  const audio = eventSfxPlayers[name] || new Audio(src);
-  eventSfxPlayers[name] = audio;
+  const overlap = name === "rszo_hit";
+  const audio = overlap ? new Audio(src) : (eventSfxPlayers[name] || new Audio(src));
+  if (!overlap) eventSfxPlayers[name] = audio;
   audio.pause();
   audio.currentTime = 0;
-  audio.volume = name === "win" ? 0.78 : 0.68;
+  audio.volume = sfxVolumeFor(name, detail);
   audio.play().catch(() => {});
+}
+
+function sfxVolumeFor(name, detail = {}) {
+  const baseVolume = name === "win" ? 0.78 : 0.68;
+  if (detail.system || POSITIONAL_VOLUME_EXEMPT.has(name)) return baseVolume;
+
+  const x = Number(detail.x);
+  const y = Number(detail.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !state?.width || !state?.height) return baseVolume;
+
+  const center = cameraCenterCell();
+  if (!center) return baseVolume;
+
+  const distance = Math.hypot(x - center.x, y - center.y);
+  const maxDistance = Math.max(1, Math.hypot(state.width, state.height) * 0.48);
+  const distanceGain = Math.pow(clamp(1 - distance / maxDistance, 0.12, 1), 1.35);
+  const zoomGain = clamp(0.58 + (mapZoom - 0.72) * 0.34, 0.58, 1.28);
+  return clamp(baseVolume * distanceGain * zoomGain, 0.035, 1);
+}
+
+function cameraCenterCell() {
+  const wrap = els.map?.parentElement;
+  if (!wrap || !els.map?.scrollWidth || !els.map?.scrollHeight || !state?.width || !state?.height) return null;
+  const x = (wrap.scrollLeft + wrap.clientWidth / 2) / els.map.scrollWidth * state.width - 0.5;
+  const y = (wrap.scrollTop + wrap.clientHeight / 2) / els.map.scrollHeight * state.height - 0.5;
+  return {
+    x: clamp(x, 0, state.width - 1),
+    y: clamp(y, 0, state.height - 1)
+  };
 }
 
 function playExplosionBatch(batch = []) {
@@ -3581,232 +3668,6 @@ function playExplosionBatch(batch = []) {
   }
 }
 
-function playHireSfx(ctx, detail = {}) {
-  const now = ctx.currentTime;
-  const boat = detail.unit === "boat" || detail.unit === "cruiser";
-  tone(ctx, boat ? 260 : 520, boat ? 180 : 680, 0.09, "triangle", 0.07, now);
-  tone(ctx, boat ? 180 : 680, boat ? 130 : 420, 0.11, "triangle", 0.06, now + 0.1);
-  noise(ctx, 0.08, 0.04, now + 0.03, boat ? "lowpass" : "highpass", boat ? 480 : 1600);
-}
-
-function playDemolishSfx(ctx) {
-  const now = ctx.currentTime;
-  tone(ctx, 180, 62, 0.22, "square", 0.12, now);
-  noise(ctx, 0.24, 0.16, now, "lowpass", 520);
-}
-
-function playDiplomacySfx(ctx) {
-  const now = ctx.currentTime;
-  tone(ctx, 520, 660, 0.08, "sine", 0.05, now);
-  tone(ctx, 660, 880, 0.12, "sine", 0.05, now + 0.09);
-}
-
-function playAlertSfx(ctx) {
-  const now = ctx.currentTime;
-  tone(ctx, 360, 240, 0.12, "square", 0.08, now);
-  tone(ctx, 360, 220, 0.12, "square", 0.08, now + 0.18);
-}
-
-function playShotSfx(ctx, weapon = "tank") {
-  const now = ctx.currentTime;
-  if (weapon === "rocket") {
-    noise(ctx, 0.05, 0.28, now, "highpass", 2200);
-    noise(ctx, 0.42, 0.16, now + 0.02, "bandpass", 760);
-    tone(ctx, 430, 82, 0.46, "sawtooth", 0.18, now);
-    tone(ctx, 78, 34, 0.22, "square", 0.12, now + 0.08);
-    return;
-  }
-  if (weapon === "mlrs") {
-    for (let index = 0; index < 5; index += 1) {
-      const at = now + index * 0.055;
-      noise(ctx, 0.035, 0.18, at, "highpass", 2400);
-      noise(ctx, 0.12, 0.08, at, "bandpass", 820);
-      tone(ctx, 260, 66, 0.16, "sawtooth", 0.1, at);
-    }
-    return;
-  }
-  if (weapon === "cruiser") {
-    for (let index = 0; index < 2; index += 1) {
-      const at = now + index * 0.11;
-      noise(ctx, 0.06, 0.22, at, "highpass", 2100);
-      noise(ctx, 0.26, 0.12, at + 0.01, "lowpass", 520);
-      tone(ctx, 120, 30, 0.24, "square", 0.2, at);
-    }
-    return;
-  }
-  if (weapon === "rpg") {
-    noise(ctx, 0.04, 0.2, now, "highpass", 2400);
-    noise(ctx, 0.22, 0.14, now + 0.015, "lowpass", 520);
-    tone(ctx, 150, 42, 0.2, "square", 0.2, now);
-    return;
-  }
-  noise(ctx, 0.035, 0.3, now, "highpass", 2600);
-  noise(ctx, 0.18, 0.2, now, "lowpass", 560);
-  tone(ctx, 118, 34, 0.22, "square", 0.25, now);
-  tone(ctx, 44, 28, 0.24, "sine", 0.1, now + 0.04);
-}
-
-function playMisfireSfx(ctx) {
-  const now = ctx.currentTime;
-  noise(ctx, 0.04, 0.14, now, "highpass", 3600);
-  tone(ctx, 900, 180, 0.08, "square", 0.05, now);
-  tone(ctx, 120, 70, 0.12, "triangle", 0.04, now + 0.07);
-}
-
-function playExplosionSfx(ctx, size = "medium") {
-  const now = ctx.currentTime;
-  const scale = { tiny: 0.5, small: 0.82, medium: 1.18, big: 1.55, huge: 2.8 }[size] || 1;
-  noise(ctx, 0.035, 0.34 * Math.min(scale, 1.8), now, "highpass", 1800);
-  noise(ctx, 0.34 * scale, 0.24 * scale, now + 0.01, "lowpass", 360 / Math.max(0.7, scale));
-  tone(ctx, 96, 24, 0.32 * scale, "triangle", 0.22 * scale, now);
-  tone(ctx, 48, 18, 0.58 * scale, "sine", 0.12 * scale, now + 0.05);
-  if (scale > 1.1) {
-    noise(ctx, 0.75 * Math.min(scale, 2.2), 0.1 * scale, now + 0.16, "lowpass", 150);
-  }
-  if (scale > 2) {
-    tone(ctx, 30, 15, 1.4, "sawtooth", 0.13 * scale, now + 0.24);
-  }
-}
-
-function playNukeSfx(ctx) {
-  const now = ctx.currentTime;
-  noise(ctx, 0.08, 0.42, now, "highpass", 2600);
-  tone(ctx, 540, 1080, 0.26, "sine", 0.1, now);
-  tone(ctx, 1080, 280, 0.52, "sine", 0.11, now + 0.2);
-  tone(ctx, 86, 14, 1.85, "sawtooth", 0.34, now + 0.3);
-  tone(ctx, 32, 12, 2.25, "sine", 0.28, now + 0.5);
-  noise(ctx, 2.15, 0.34, now + 0.32, "lowpass", 170);
-  noise(ctx, 1.1, 0.16, now + 0.9, "bandpass", 90);
-}
-
-function tone(ctx, from, to, duration, type, volume, start) {
-  const oscillator = ctx.createOscillator();
-  const gain = envelope(ctx, start, volume, 0.01, duration);
-  oscillator.type = type;
-  oscillator.frequency.setValueAtTime(Math.max(1, from), start);
-  oscillator.frequency.exponentialRampToValueAtTime(Math.max(1, to), start + duration);
-  oscillator.connect(gain);
-  oscillator.start(start);
-  oscillator.stop(start + duration + 0.03);
-}
-
-function noise(ctx, duration, volume, start, filterType, frequency) {
-  const sampleCount = Math.max(1, Math.floor(ctx.sampleRate * duration));
-  const buffer = ctx.createBuffer(1, sampleCount, ctx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let index = 0; index < sampleCount; index += 1) {
-    const fade = 1 - index / sampleCount;
-    data[index] = (Math.random() * 2 - 1) * fade;
-  }
-
-  const source = ctx.createBufferSource();
-  const filter = ctx.createBiquadFilter();
-  const gain = envelope(ctx, start, volume, 0.005, duration);
-  source.buffer = buffer;
-  filter.type = filterType;
-  filter.frequency.setValueAtTime(frequency, start);
-  source.connect(filter);
-  filter.connect(gain);
-  source.start(start);
-  source.stop(start + duration + 0.03);
-}
-
-function envelope(ctx, start, volume, attack, duration) {
-  const gain = ctx.createGain();
-  const peak = Math.max(0.0001, volume * MASTER_SFX_VOLUME);
-  gain.gain.setValueAtTime(0.0001, start);
-  gain.gain.linearRampToValueAtTime(peak, start + attack);
-  gain.gain.exponentialRampToValueAtTime(0.0001, start + Math.max(attack + 0.01, duration));
-  gain.connect(ctx.destination);
-  return gain;
-}
-
-function toggleMusic() {
-  unlockSfxAudio();
-  if (music.paused) {
-    if (!music.src) {
-      loadCurrentMusicTrack();
-    }
-    setMusicStatus("loading");
-    music.play().then(() => {
-      setMusicStatus("on");
-    }).catch(() => {
-      setMusicStatus("");
-      showToast("Браузер заблокировал звук до первого тапа.");
-    });
-  } else {
-    music.pause();
-    setMusicStatus("off");
-  }
-}
-
-function setMusicStatus(status = "") {
-  const lobbyLabels = {
-    loading: "♪ ...",
-    on: "♪ on",
-    off: "♪ off",
-    "": "♪"
-  };
-  const topLabels = {
-    loading: "♪ ...",
-    on: "♪ on",
-    off: "♪ off",
-    "": "♪"
-  };
-  if (els.lobbyMusic) {
-    els.lobbyMusic.textContent = lobbyLabels[status] || "♪";
-    els.lobbyMusic.title = status === "on" ? "Музыка включена" : status === "off" ? "Музыка выключена" : "Музыка";
-  }
-  if (els.gameMusic) {
-    els.gameMusic.textContent = topLabels[status] || topLabels[""];
-    els.gameMusic.title = status === "on" ? "Музыка включена" : status === "off" ? "Музыка выключена" : "Музыка";
-  }
-}
-
-function updateTopButtons() {
-  if (els.lobbyMusic) {
-    els.lobbyMusic.textContent = music.paused ? "♪" : "♪ on";
-    els.lobbyMusic.title = music.paused ? "Музыка" : "Музыка включена";
-  }
-  if (els.gameMusic) {
-    els.gameMusic.textContent = music.paused ? "♪" : "♪ on";
-    els.gameMusic.title = music.paused ? "Музыка" : "Музыка включена";
-  }
-}
-
-function loadMusicPlaylist() {
-  fetch("/api/music", { cache: "no-store" })
-    .then((response) => response.ok ? response.json() : null)
-    .then((data) => {
-      if (Array.isArray(data?.playlist) && data.playlist.length) {
-        musicPlaylist = data.playlist;
-        musicIndex = 0;
-        if (!music.paused) {
-          loadCurrentMusicTrack();
-          music.play().catch(() => {});
-        }
-      }
-      if (data?.sfx) {
-        updateEventSfxSources(data.sfx);
-      }
-    })
-    .catch(() => {});
-}
-
-function loadCurrentMusicTrack() {
-  const src = musicPlaylist[musicIndex % musicPlaylist.length] || "/music/theme.mp3";
-  if (music.src.endsWith(src)) return;
-  music.src = src;
-  music.load();
-}
-
-function playNextMusic() {
-  if (!musicPlaylist.length) return;
-  musicIndex = (musicIndex + 1) % musicPlaylist.length;
-  loadCurrentMusicTrack();
-  music.play().catch(() => {});
-}
-
 function escapeHtml(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -3819,5 +3680,3 @@ function unitIconHtml(kind, size = "inline") {
   const unit = UNIT_DEFS[kind] || {};
   return `<span class="unit-icon-text unit-icon-text--${escapeHtml(size)}">${escapeHtml(unit.icon || "")}</span>`;
 }
-
-window.__paperMusicToggle = toggleMusic;
