@@ -1,4 +1,4 @@
-const CACHE_NAME = "paper-wars-shell-v13";
+const CACHE_NAME = "paper-wars-shell-v15";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -15,6 +15,7 @@ const APP_SHELL = [
   "/sfx/kreyser.mp3",
   "/sfx/money.mp3",
   "/sfx/osechka.mp3",
+  "/sfx/Pikap.mp3",
   "/sfx/pvo.mp3",
   "/sfx/rain.mp3",
   "/sfx/raketa.mp3",

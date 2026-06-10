@@ -27,6 +27,7 @@ const UNIT_DEFS = {
   ew: { name: "РЭБ", icon: "📡", cost: "10💰 2⚙️ · 1.5с" },
   mlrs: { name: "РСЗО", icon: "🚚", cost: "3👤 70💰 28⚙️" },
   drone: { name: "Дрон", icon: "🛸", cost: "16💰 4⚙️ 3💣" },
+  pickup: { name: "Пикап", icon: "🚗", cost: "1👤 22💰 6⚙️ 2💣" },
   saboteur: { name: "Шахед", icon: "🛩", cost: "нужен 🏭 · 1👤 45💰 6⚙️ 4💣 · кд" },
   boat: { name: "Лодка", icon: "🚤", cost: "1👤 12💰 5⚙️" },
   cruiser: { name: "Крейсер", icon: "🚢", cost: "2👤 55💰 24⚙️ · у порта" },
@@ -78,6 +79,7 @@ const UNIT_MARKS = {
   ew: "РЭБ",
   mlrs: "РСЗО",
   drone: "Дрон",
+  pickup: "Пикап",
   saboteur: "Шахед",
   boat: "Лодка",
   cruiser: "Крейсер"
@@ -89,9 +91,9 @@ const MOVE_TOGGLE_LABELS = {
   ew: "РЭБ",
   cruiser: "Крейсер",
   drone: "Дрон",
-  saboteur: "Шахед"
+  pickup: "Пикап"
 };
-const SCRAPPABLE_UNITS = ["tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "boat", "cruiser"];
+const SCRAPPABLE_UNITS = ["tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "pickup", "boat", "cruiser"];
 const DEV_CODE = "6686";
 
 const IDEOLOGY_DEFS = {
@@ -190,11 +192,17 @@ const els = {
   chatLog: document.querySelector("#chatLog"),
   chatForm: document.querySelector("#chatForm"),
   chatInput: document.querySelector("#chatInput"),
+  journalOpen: document.querySelector("#journalOpen"),
+  journalDrawer: document.querySelector("#journalDrawer"),
+  journalClose: document.querySelector("#journalClose"),
+  journalLog: document.querySelector("#journalLog"),
   diplomacyPrompt: document.querySelector("#diplomacyPrompt"),
   modalLayer: document.querySelector("#modalLayer"),
   statsOverlay: document.querySelector("#statsOverlay"),
   statsClose: document.querySelector("#statsClose"),
   statsOverlayContent: document.querySelector("#statsOverlayContent"),
+  soundButton: document.querySelector("#soundButton"),
+  lobbySoundButton: document.querySelector("#lobbySoundButton"),
   themeButton: document.querySelector("#themeButton"),
   exitButton: document.querySelector("#exitButton"),
   developerButton: document.querySelector("#developerButton"),
@@ -228,7 +236,7 @@ let moveMlrs = true;
 let moveEw = false;
 let moveCruiser = true;
 let moveDrone = false;
-let moveSaboteur = false;
+let movePickup = true;
 let explosions = [];
 let nukeSmokes = [];
 let impactSmokes = [];
@@ -244,10 +252,12 @@ let renderQueued = false;
 let renderedMapKey = "";
 let renderedControlsKey = "";
 let renderedChatKey = "";
+let renderedJournalKey = "";
 let renderedQuickStatusKey = "";
 let renderedWorldEventKey = "";
 let renderedStatsKey = "";
 let renderedChatButtonKey = "";
+let renderedJournalButtonKey = "";
 let renderedDiplomacyPromptKey = "";
 let renderedEndOverlayKey = "";
 let mapDomKey = "";
@@ -260,12 +270,13 @@ let reconnectAttempts = 0;
 let heartbeatTimer = null;
 let serverFull = false;
 const SFX_NAMES = [
-  "attack", "drone", "drone_run", "d_house", "d_tehnika", "fail", "kreyser", "money", "osechka", "pvo", "rain", "raketa", "REB",
+  "attack", "drone", "drone_run", "d_house", "d_tehnika", "fail", "kreyser", "money", "osechka", "Pikap", "pvo", "rain", "raketa", "REB",
   "rpg", "rszo", "rszo_hit", "rszo_shot", "shahed", "soyuz", "stroyka", "tank", "tank_shot", "war", "win", "yaderka"
 ];
 const POSITIONAL_VOLUME_EXEMPT = new Set(["fail", "money", "rain", "shahed", "soyuz", "war", "win", "yaderka"]);
 const SFX_PLAY_LIMIT_MS = {
   drone_run: 2000,
+  Pikap: 2000,
   tank: 2000
 };
 const MAX_SFX_OVERLAP_PER_NAME = 8;
@@ -281,9 +292,11 @@ let pendingJoinPayload = null;
 let lastChatId = null;
 let mapBubbles = [];
 let unreadChatCount = 0;
+let unreadJournalCount = 0;
 let statsOpen = false;
 let lastDisconnectNotice = "";
 let mapZoom = 1;
+let lastMapSyncRequestAt = 0;
 let modalSubmitHandler = null;
 let devUnlocked = false;
 let trollCensorTimer = null;
@@ -329,13 +342,69 @@ const EXPLOSION_MS = {
 };
 const SHOT_EFFECT_MS = 520;
 const CLIENT_TOKEN = getClientToken();
+let sfxEnabled = loadSoundEnabled();
 
+ensureDynamicUi();
 applyTheme(loadTheme());
+applySoundPreference();
 connect();
 bindUi();
 preloadEventSfx();
 registerServiceWorker();
 setInterval(updateLivePanels, 1000);
+
+function ensureDynamicUi() {
+  if (!els.soundButton) {
+    const topTools = document.querySelector(".top-tools");
+    if (topTools) {
+      els.soundButton = document.createElement("button");
+      els.soundButton.id = "soundButton";
+      els.soundButton.className = "top-tool";
+      els.soundButton.type = "button";
+      topTools.prepend(els.soundButton);
+    }
+  }
+
+  if (!els.lobbySoundButton) {
+    const lobbyTools = document.querySelector(".lobby-tools");
+    if (lobbyTools) {
+      els.lobbySoundButton = document.createElement("button");
+      els.lobbySoundButton.id = "lobbySoundButton";
+      els.lobbySoundButton.className = "top-tool";
+      els.lobbySoundButton.type = "button";
+      lobbyTools.prepend(els.lobbySoundButton);
+    }
+  }
+
+  if (!els.journalOpen) {
+    const battlefield = document.querySelector(".battlefield");
+    if (battlefield) {
+      els.journalOpen = document.createElement("button");
+      els.journalOpen.id = "journalOpen";
+      els.journalOpen.className = "journal-toggle";
+      els.journalOpen.type = "button";
+      els.journalOpen.setAttribute("aria-controls", "journalDrawer");
+      els.journalOpen.textContent = "\u0416\u0443\u0440\u043d\u0430\u043b";
+      battlefield.append(els.journalOpen);
+    }
+  }
+
+  if (!els.journalDrawer) {
+    els.journalDrawer = document.createElement("section");
+    els.journalDrawer.id = "journalDrawer";
+    els.journalDrawer.className = "journal-drawer hidden";
+    els.journalDrawer.innerHTML = `
+      <header class="chat-head">
+        <strong>\u0411\u043e\u0435\u0432\u043e\u0439 \u0436\u0443\u0440\u043d\u0430\u043b</strong>
+        <button id="journalClose" type="button">&times;</button>
+      </header>
+      <div id="journalLog" class="chat-log"></div>
+    `;
+    els.chatDrawer?.after(els.journalDrawer);
+    els.journalClose = els.journalDrawer.querySelector("#journalClose");
+    els.journalLog = els.journalDrawer.querySelector("#journalLog");
+  }
+}
 
 function connect() {
   if (serverFull) return;
@@ -564,6 +633,8 @@ function bindUi() {
   els.lobbyThemeButton?.addEventListener("click", () => {
     applyTheme(currentTheme() === "dark" ? "light" : "dark");
   });
+  els.soundButton?.addEventListener("click", toggleSound);
+  els.lobbySoundButton?.addEventListener("click", toggleSound);
 
   els.statsButton?.addEventListener("click", () => {
     statsOpen = !statsOpen;
@@ -628,13 +699,14 @@ function bindUi() {
       moveDrone = event.target.checked;
       renderGame();
     }
-    if (event.target.matches("[data-move-toggle='saboteur']")) {
-      moveSaboteur = event.target.checked;
+    if (event.target.matches("[data-move-toggle='pickup']")) {
+      movePickup = event.target.checked;
       renderGame();
     }
   });
 
   els.chatOpen.addEventListener("click", () => toggleChat());
+  els.journalOpen?.addEventListener("click", () => toggleJournal());
 
   els.chatForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -646,6 +718,9 @@ function bindUi() {
 
   els.chatClose.addEventListener("click", () => {
     closeChat();
+  });
+  els.journalClose?.addEventListener("click", () => {
+    closeJournal();
   });
 
   els.diplomacyPrompt.addEventListener("click", (event) => {
@@ -735,10 +810,12 @@ function handleServerMessage(message) {
     resetMapDom(true);
     renderedControlsKey = "";
     renderedChatKey = "";
+    renderedJournalKey = "";
     renderedQuickStatusKey = "";
     renderedWorldEventKey = "";
     renderedStatsKey = "";
     renderedChatButtonKey = "";
+    renderedJournalButtonKey = "";
     renderedDiplomacyPromptKey = "";
     renderedEndOverlayKey = "";
     mapBubbles = [];
@@ -750,7 +827,9 @@ function handleServerMessage(message) {
     stopRainAmbientSfx();
     hqRebuildEnds = {};
     unreadChatCount = 0;
+    unreadJournalCount = 0;
     closeChat();
+    closeJournal();
     els.lobby.classList.remove("hidden");
     els.game.classList.add("hidden");
     renderLobby();
@@ -766,10 +845,12 @@ function handleServerMessage(message) {
     resetMapDom(true);
     renderedControlsKey = "";
     renderedChatKey = "";
+    renderedJournalKey = "";
     renderedQuickStatusKey = "";
     renderedWorldEventKey = "";
     renderedStatsKey = "";
     renderedChatButtonKey = "";
+    renderedJournalButtonKey = "";
     renderedDiplomacyPromptKey = "";
     renderedEndOverlayKey = "";
     mapBubbles = [];
@@ -781,17 +862,22 @@ function handleServerMessage(message) {
     stopRainAmbientSfx();
     hqRebuildEnds = {};
     unreadChatCount = 0;
+    unreadJournalCount = 0;
     closeChat();
+    closeJournal();
     showToast("Матч начался.");
   }
 
   if (message.type === "state") {
     const previousMap = state?.map || null;
     const previousChat = state?.chat || [];
+    const previousJournal = state?.journal || [];
+    const nextMap = message.state.map || applyMapPatch(previousMap, message.state.mapPatch, state?.mapVersion);
     state = {
       ...message.state,
-      map: message.state.map || previousMap || [],
-      chat: message.state.chat || previousChat
+      map: nextMap || previousMap || [],
+      chat: message.state.chat || previousChat,
+      journal: message.state.journal || previousJournal
     };
     me = message.you || me;
     spectator = message.spectator;
@@ -815,6 +901,11 @@ function handleServerMessage(message) {
 
   if (message.type === "flight") {
     addFlightEffect(message);
+  }
+
+  if (message.type === "flightCancel") {
+    flightEffects = flightEffects.filter((flight) => flight.id !== message.id);
+    refreshMapEffects(250);
   }
 
   if (message.type === "explosions") {
@@ -880,6 +971,21 @@ function handleServerMessage(message) {
     }
   }
 
+  if (message.type === "journal") {
+    if (state) {
+      state.journal = message.journal;
+      state.journalVersion = message.journalVersion ?? state.journalVersion;
+      showEventBanner(message.entry?.text || "");
+      if (els.journalDrawer?.classList.contains("hidden")) {
+        unreadJournalCount += 1;
+      } else {
+        unreadJournalCount = 0;
+      }
+      renderJournal();
+      updateJournalButton();
+    }
+  }
+
   if (message.type === "error" || message.type === "info") {
     showToast(message.message);
   }
@@ -898,6 +1004,30 @@ function addShotEffect(detail) {
   });
   shotEffects = shotEffects.slice(-MAX_SHOTS_ON_MAP);
   refreshMapEffects(SHOT_EFFECT_MS);
+}
+
+function applyMapPatch(previousMap, patch, previousVersion) {
+  if (!patch) return null;
+  if (!previousMap || patch.fromVersion !== previousVersion || !Array.isArray(patch.cells)) {
+    requestFullMapSync();
+    return previousMap || null;
+  }
+
+  const nextMap = previousMap.map((row) => row.slice());
+  for (const cell of patch.cells) {
+    const x = Number(cell?.x);
+    const y = Number(cell?.y);
+    if (!Number.isInteger(x) || !Number.isInteger(y) || !nextMap[y]) continue;
+    nextMap[y][x] = cell;
+  }
+  return nextMap;
+}
+
+function requestFullMapSync() {
+  const now = Date.now();
+  if (now - lastMapSyncRequestAt < 1200) return;
+  lastMapSyncRequestAt = now;
+  send({ type: "syncMap" }, { silent: true, priority: true });
 }
 
 function addFlightEffect(detail) {
@@ -1295,7 +1425,9 @@ function renderGame() {
   renderControls();
   renderStatsOverlay();
   renderChat();
+  renderJournal();
   updateChatButton();
+  updateJournalButton();
   renderDiplomacyPrompt();
   renderEndOverlay();
   centerHomeOnce();
@@ -1651,7 +1783,7 @@ function mapBubbleForCell(cell, now = Date.now()) {
 function getMapRenderKey() {
   const selectedKey = selected ? `${selected.x}:${selected.y}` : "";
   const pendingKey = pending ? `${pending.action}:${pending.x ?? ""}:${pending.y ?? ""}` : "";
-  const actionKey = activeTab === "actions" || pending ? `${activeTab}:${moveInf}:${moveRpg ? 1 : 0}:${moveTank ? 1 : 0}:${moveMlrs ? 1 : 0}:${moveEw ? 1 : 0}:${moveCruiser ? 1 : 0}:${moveDrone ? 1 : 0}:${moveSaboteur ? 1 : 0}` : "";
+  const actionKey = activeTab === "actions" || pending ? `${activeTab}:${moveInf}:${moveRpg ? 1 : 0}:${moveTank ? 1 : 0}:${moveMlrs ? 1 : 0}:${moveEw ? 1 : 0}:${moveCruiser ? 1 : 0}:${moveDrone ? 1 : 0}:${movePickup ? 1 : 0}` : "";
   const explosionKey = explosions.map((explosion) => `${explosion.id}:${explosion.until}`).join("|");
   const smokeKey = nukeSmokes.map((smoke) => `${smoke.id}:${smoke.until}`).join("|");
   const impactSmokeKey = impactSmokes.map((smoke) => `${smoke.id}:${smoke.until}`).join("|");
@@ -1690,14 +1822,6 @@ function getTargetHighlights() {
 
   if (pending?.action === "rpg" || pending?.action === "tank" || pending?.action === "rocket" || pending?.action === "mlrs" || pending?.action === "cruiser") {
     addAttackTargets(getCell(pending.x, pending.y), pending.action, highlights.attack);
-  }
-
-  if (pending?.action === "nuke" || pending?.action === "shahed") {
-    for (const row of state.map) {
-      for (const cell of row) {
-        highlights.attack.add(cellKey(cell));
-      }
-    }
   }
 
   return highlights;
@@ -1755,10 +1879,11 @@ function moveRequest(source, ownUnits) {
   const mlrs = moveMlrs && (ownUnits.mlrs || 0) > 0;
   const cruiser = moveCruiser && source?.terrain === "water" && (ownUnits.cruiser || 0) > 0;
   const drone = moveDrone && (ownUnits.drone || 0) > 0 ? (ownUnits.drone || 0) : 0;
+  const pickup = movePickup && (ownUnits.pickup || 0) > 0 ? 1 : 0;
   const saboteur = 0;
-  const rpgBlockedByCovert = drone && inf <= 0 && !tank && !mlrs && !cruiser;
+  const rpgBlockedByCovert = drone && inf <= 0 && !tank && !mlrs && !pickup && !cruiser;
   const rpg = moveRpg && !rpgBlockedByCovert ? Math.min(ownUnits.rpg || 0, 1) : 0;
-  const ewEscort = inf + rpg + (tank ? 1 : 0) + (mlrs ? 1 : 0);
+  const ewEscort = inf + rpg + (tank ? 1 : 0) + (mlrs ? 1 : 0) + pickup;
   const ew = moveEw && (ownUnits.ew || 0) > 0 && ewEscort > 0 ? 1 : 0;
   const boat = source?.terrain === "water" && (ownUnits.boat || 0) > 0;
   return {
@@ -1768,11 +1893,12 @@ function moveRequest(source, ownUnits) {
     mlrs,
     ew,
     drone,
+    pickup,
     saboteur,
     boat,
     cruiser,
-    power: inf + rpg + (tank ? 1 : 0) + (mlrs ? 1 : 0) + ew + drone + saboteur + (boat ? 1 : 0) + (cruiser ? 1 : 0),
-    ammoCost: inf + rpg + (tank ? 2 : 0) + (mlrs ? 2 : 0) + ew + drone + saboteur + (boat || cruiser ? 1 : 0)
+    power: inf + rpg + (tank ? 1 : 0) + (mlrs ? 1 : 0) + ew + drone + pickup + saboteur + (boat ? 1 : 0) + (cruiser ? 1 : 0),
+    ammoCost: inf + rpg + (tank ? 2 : 0) + (mlrs ? 2 : 0) + ew + drone + pickup + saboteur + (boat || cruiser ? 1 : 0)
   };
 }
 
@@ -1780,7 +1906,7 @@ function canMoveInto(target, source, request) {
   if (!target) return false;
   const rawWater = target.terrain === "water" && target.building?.type !== "bridge";
   const airMove = request.drone || request.saboteur;
-  const landMove = request.inf + request.rpg + (request.tank ? 1 : 0) + (request.mlrs ? 1 : 0) + request.ew;
+  const landMove = request.inf + request.rpg + (request.tank ? 1 : 0) + (request.mlrs ? 1 : 0) + request.ew + request.pickup;
   const droneOnlyMove = (request.drone || 0) > 0 && landMove <= 0 && !request.boat && !request.cruiser && !request.saboteur;
   if (rawWater) {
     if (landMove > 0 && !request.boat && !request.cruiser) return false;
@@ -1798,6 +1924,7 @@ function canMoveInto(target, source, request) {
   if (request.rpg && targetOwnUnits.rpg) return false;
   if (request.tank && targetOwnUnits.tank) return false;
   if (request.mlrs && targetOwnUnits.mlrs) return false;
+  if (request.pickup && targetOwnUnits.pickup) return false;
   if (request.ew && targetOwnUnits.ew) return false;
   if (request.boat && targetOwnUnits.boat) return false;
   if (request.cruiser && targetOwnUnits.cruiser) return false;
@@ -1923,7 +2050,7 @@ function getControlsRenderKey() {
     moveEw ? 1 : 0,
     moveCruiser ? 1 : 0,
     moveDrone ? 1 : 0,
-    moveSaboteur ? 1 : 0,
+    movePickup ? 1 : 0,
     player.vassalOf || "",
     player.mobilization ? 1 : 0,
     vassals,
@@ -2027,7 +2154,8 @@ function actionsTroopsHtml({ cell, ownUnits, mobilizationOn }) {
         ${moveToggleHtml("rpg", moveRpg, (ownUnits.rpg || 0) > 0)}
         ${moveToggleHtml("tank", moveTank, (ownUnits.tank || 0) > 0)}
         ${moveToggleHtml("mlrs", moveMlrs, (ownUnits.mlrs || 0) > 0)}
-        ${moveToggleHtml("ew", moveEw, (ownUnits.ew || 0) > 0 && ((ownUnits.inf || 0) > 0 || (ownUnits.rpg || 0) > 0 || (ownUnits.tank || 0) > 0 || (ownUnits.mlrs || 0) > 0))}
+        ${moveToggleHtml("pickup", movePickup, (ownUnits.pickup || 0) > 0)}
+        ${moveToggleHtml("ew", moveEw, (ownUnits.ew || 0) > 0 && ((ownUnits.inf || 0) > 0 || (ownUnits.rpg || 0) > 0 || (ownUnits.tank || 0) > 0 || (ownUnits.mlrs || 0) > 0 || (ownUnits.pickup || 0) > 0))}
         ${moveToggleHtml("cruiser", moveCruiser, (ownUnits.cruiser || 0) > 0)}
         ${moveToggleHtml("drone", moveDrone, (ownUnits.drone || 0) > 0)}
       </div>
@@ -2105,10 +2233,10 @@ function syncMoveOptions(cell, ownUnits = {}) {
     moveRpg = (ownUnits.rpg || 0) > 0;
     moveTank = (ownUnits.tank || 0) > 0;
     moveMlrs = (ownUnits.mlrs || 0) > 0;
-    moveEw = (ownUnits.ew || 0) > 0 && ((ownUnits.inf || 0) > 0 || (ownUnits.rpg || 0) > 0 || (ownUnits.tank || 0) > 0 || (ownUnits.mlrs || 0) > 0);
+    movePickup = (ownUnits.pickup || 0) > 0;
+    moveEw = (ownUnits.ew || 0) > 0 && ((ownUnits.inf || 0) > 0 || (ownUnits.rpg || 0) > 0 || (ownUnits.tank || 0) > 0 || (ownUnits.mlrs || 0) > 0 || (ownUnits.pickup || 0) > 0);
     moveCruiser = (ownUnits.cruiser || 0) > 0;
-    moveDrone = (ownUnits.drone || 0) > 0 && (ownUnits.inf || 0) <= 0 && (ownUnits.rpg || 0) <= 0 && !ownUnits.tank && !ownUnits.mlrs;
-    moveSaboteur = false;
+    moveDrone = (ownUnits.drone || 0) > 0 && (ownUnits.inf || 0) <= 0 && (ownUnits.rpg || 0) <= 0 && !ownUnits.tank && !ownUnits.mlrs && !ownUnits.pickup;
     return;
   }
 
@@ -2116,10 +2244,10 @@ function syncMoveOptions(cell, ownUnits = {}) {
   if (!ownUnits.rpg) moveRpg = false;
   if (!ownUnits.tank) moveTank = false;
   if (!ownUnits.mlrs) moveMlrs = false;
-  if (!ownUnits.ew || ((ownUnits.inf || 0) <= 0 && (ownUnits.rpg || 0) <= 0 && !ownUnits.tank && !ownUnits.mlrs)) moveEw = false;
+  if (!ownUnits.pickup) movePickup = false;
+  if (!ownUnits.ew || ((ownUnits.inf || 0) <= 0 && (ownUnits.rpg || 0) <= 0 && !ownUnits.tank && !ownUnits.mlrs && !ownUnits.pickup)) moveEw = false;
   if (!ownUnits.cruiser) moveCruiser = false;
   if (!ownUnits.drone) moveDrone = false;
-  moveSaboteur = false;
 }
 
 function renderStatsOverlay() {
@@ -2222,6 +2350,7 @@ function statsUnitBreakdown(stats = {}) {
     ["РЭБ", stats.ew],
     ["РСЗО", stats.mlrs],
     ["Дроны", stats.drone],
+    ["Пикапы", stats.pickup],
     ["Шахеды", stats.saboteur],
     ["Лодки", stats.boat],
     ["Крейсеры", stats.cruiser]
@@ -2628,6 +2757,16 @@ function openTrollFakeWinModal() {
 
 function addLocalSystemMessage(text) {
   if (!state) return;
+  const journalEntry = {
+    id: `local-troll-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    type: "battle",
+    text,
+    at: Date.now()
+  };
+  state.journal = [...(state.journal || []), journalEntry].slice(-80);
+  renderJournal();
+  renderPanels();
+  return;
   const entry = {
     id: `local-troll-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     type: "system",
@@ -3010,6 +3149,7 @@ function sendMove(source, tx, ty) {
     mlrs: moveMlrs && ownUnits.mlrs > 0,
     ew: rawWaterTarget ? 0 : request.ew,
     drone: moveDrone ? (ownUnits.drone || 0) : 0,
+    pickup: rawWaterTarget ? 0 : request.pickup,
     saboteur: 0,
     boat: boatSails && !cruiserSails,
     cruiser: cruiserSails
@@ -3071,6 +3211,7 @@ function toggleChat() {
 
 function openChat() {
   unreadChatCount = 0;
+  closeJournal();
   els.chatDrawer.classList.remove("hidden");
   renderChat();
   updateChatButton();
@@ -3080,6 +3221,28 @@ function openChat() {
 function closeChat() {
   els.chatDrawer.classList.add("hidden");
   updateChatButton();
+}
+
+function toggleJournal() {
+  if (els.journalDrawer?.classList.contains("hidden")) {
+    openJournal();
+  } else {
+    closeJournal();
+  }
+}
+
+function openJournal() {
+  if (!els.journalDrawer) return;
+  unreadJournalCount = 0;
+  closeChat();
+  els.journalDrawer.classList.remove("hidden");
+  renderJournal();
+  updateJournalButton();
+}
+
+function closeJournal() {
+  els.journalDrawer?.classList.add("hidden");
+  updateJournalButton();
 }
 
 function updateChatButton() {
@@ -3097,6 +3260,21 @@ function updateChatButton() {
   els.chatOpen.setAttribute("aria-expanded", String(drawerOpen));
 }
 
+function updateJournalButton() {
+  if (!els.journalOpen) return;
+  const unread = Math.min(unreadJournalCount, 99);
+  const drawerOpen = !els.journalDrawer?.classList.contains("hidden");
+  const nextKey = `${unread}:${drawerOpen ? 1 : 0}`;
+  if (nextKey === renderedJournalButtonKey) return;
+  renderedJournalButtonKey = nextKey;
+  els.journalOpen.innerHTML = `
+    <span>\u0416\u0443\u0440\u043d\u0430\u043b</span>
+    ${unread > 0 ? `<b>${unread}</b>` : ""}
+  `;
+  els.journalOpen.classList.toggle("has-unread", unread > 0);
+  els.journalOpen.setAttribute("aria-expanded", String(drawerOpen));
+}
+
 function renderChat() {
   if (!state || els.chatDrawer.classList.contains("hidden")) return;
   const chat = (state.chat || []).slice(-40);
@@ -3105,6 +3283,26 @@ function renderChat() {
   renderedChatKey = chatKey;
   els.chatLog.innerHTML = chat.map(chatEntryHtml).join("");
   els.chatLog.scrollTop = els.chatLog.scrollHeight;
+}
+
+function renderJournal() {
+  if (!state || !els.journalDrawer || els.journalDrawer.classList.contains("hidden")) return;
+  const journal = (state.journal || []).slice(-80);
+  const journalKey = journal.map((entry) => entry.id).join("|");
+  if (journalKey === renderedJournalKey) return;
+  renderedJournalKey = journalKey;
+  els.journalLog.innerHTML = journal.map(journalEntryHtml).join("");
+  els.journalLog.scrollTop = els.journalLog.scrollHeight;
+}
+
+function journalEntryHtml(entry) {
+  const time = formatChatTime(entry.at || entry.time || entry.createdAt);
+  return `
+    <div class="chat-entry chat-entry--system">
+      <div class="chat-entry__meta"><strong>\u0411\u043e\u0439</strong><span>${time}</span></div>
+      <p>${escapeHtml(entry.text)}</p>
+    </div>
+  `;
 }
 
 function chatEntryHtml(entry) {
@@ -3317,7 +3515,7 @@ function compactUnits(units) {
   const parts = [];
   if (units.inf) parts.push(`${UNIT_MARKS.inf} ${units.inf}`);
   if (units.rpg) parts.push(`${UNIT_MARKS.rpg} ${units.rpg}`);
-  for (const key of ["tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "saboteur", "boat", "cruiser"]) {
+  for (const key of ["tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "pickup", "saboteur", "boat", "cruiser"]) {
     if (units[key]) parts.push(key === "drone" || key === "saboteur" ? `${UNIT_MARKS[key]} ${units[key]}` : UNIT_MARKS[key]);
   }
   return parts.join(" ");
@@ -3352,7 +3550,7 @@ function defaultMoveInf(units) {
 }
 
 function movablePower(units) {
-  return (units.inf || 0) + (units.rpg || 0) + (units.tank || 0) + (units.mlrs || 0) + (units.drone || 0) + (units.boat || 0) + (units.cruiser || 0);
+  return (units.inf || 0) + (units.rpg || 0) + (units.tank || 0) + (units.mlrs || 0) + (units.drone || 0) + (units.pickup || 0) + (units.boat || 0) + (units.cruiser || 0);
 }
 
 function hasOwnVessel(cell) {
@@ -3450,6 +3648,7 @@ function formatUnits(units) {
   if (units.ew) parts.push("📡");
   if (units.mlrs) parts.push("🚚");
   if (units.drone) parts.push(`${units.drone}🛸`);
+  if (units.pickup) parts.push("🚗");
   if (units.saboteur) parts.push(`${units.saboteur}🛩`);
   if (units.boat) parts.push("🚤");
   if (units.cruiser) parts.push("🚢");
@@ -3499,6 +3698,50 @@ function applyTheme(theme) {
   try {
     localStorage.setItem("paperWarsTheme", normalized);
   } catch (error) {}
+}
+
+function loadSoundEnabled() {
+  try {
+    return localStorage.getItem("paperWarsSound") !== "off";
+  } catch (error) {
+    return true;
+  }
+}
+
+function toggleSound() {
+  sfxEnabled = !sfxEnabled;
+  try {
+    localStorage.setItem("paperWarsSound", sfxEnabled ? "on" : "off");
+  } catch (error) {}
+  applySoundPreference();
+  if (!sfxEnabled) {
+    stopRainAmbientSfx();
+    stopAllEventSfx();
+  } else {
+    unlockSfxAudio();
+    syncAmbientSfx();
+  }
+}
+
+function applySoundPreference() {
+  for (const button of [els.soundButton, els.lobbySoundButton]) {
+    if (!button) continue;
+    button.innerHTML = sfxEnabled ? "&#128266;" : "&#128263;";
+    button.title = sfxEnabled ? "Sound on" : "Sound off";
+    button.setAttribute("aria-pressed", String(sfxEnabled));
+  }
+}
+
+function stopAllEventSfx() {
+  for (const players of Object.values(activeEventSfx)) {
+    for (const audio of players || []) {
+      try {
+        audio.pause();
+        audio.currentTime = 0;
+      } catch (error) {}
+    }
+    players.length = 0;
+  }
 }
 
 function bindMapGestures() {
@@ -3639,10 +3882,11 @@ function updateLivePanels() {
 
 function unlockSfxAudio() {
   sfxUnlocked = true;
-  syncAmbientSfx();
+  if (sfxEnabled) syncAmbientSfx();
 }
 
 function playSfx(name, detail = {}) {
+  if (!sfxEnabled) return;
   const resolved = resolveSfxName(name, detail);
   if (eventSfxSources[resolved]) {
     playEventSfx(resolved, detail);
@@ -3692,7 +3936,7 @@ function preloadEventSfx() {
 }
 
 function playEventSfx(name, detail = {}) {
-  if (!sfxUnlocked) return;
+  if (!sfxUnlocked || !sfxEnabled) return;
   const src = eventSfxSources[name];
   if (!src) return;
   if (name === "rain") {
@@ -3734,7 +3978,7 @@ function createEventSfxAudio(name, src) {
 }
 
 function syncAmbientSfx() {
-  if (state?.activeEvent?.type === "rain") {
+  if (sfxEnabled && state?.activeEvent?.type === "rain") {
     startRainAmbientSfx();
   } else {
     stopRainAmbientSfx();
@@ -3742,7 +3986,7 @@ function syncAmbientSfx() {
 }
 
 function startRainAmbientSfx() {
-  if (!sfxUnlocked || rainAmbientPlayer) return;
+  if (!sfxUnlocked || !sfxEnabled || rainAmbientPlayer) return;
   const src = eventSfxSources.rain;
   if (!src) return;
   const audio = createEventSfxAudio("rain", src);

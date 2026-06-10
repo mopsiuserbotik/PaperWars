@@ -2137,7 +2137,8 @@ h1 {
   grid-row: 3;
 }
 
-.chat-toggle {
+.chat-toggle,
+.journal-toggle {
   position: fixed;
   right: max(12px, env(safe-area-inset-right));
   bottom: calc(var(--controls-height) + 12px);
@@ -2158,7 +2159,12 @@ h1 {
   font-weight: 900;
 }
 
-.chat-toggle b {
+.journal-toggle {
+  bottom: calc(var(--controls-height) + 62px);
+}
+
+.chat-toggle b,
+.journal-toggle b {
   display: grid;
   min-width: 20px;
   height: 20px;
@@ -2170,11 +2176,13 @@ h1 {
   line-height: 1;
 }
 
-.chat-toggle.has-unread {
+.chat-toggle.has-unread,
+.journal-toggle.has-unread {
   border-color: var(--danger);
 }
 
-.chat-drawer {
+.chat-drawer,
+.journal-drawer {
   position: fixed;
   top: 64px;
   right: 12px;
@@ -2189,6 +2197,10 @@ h1 {
   border-radius: 8px;
   background: var(--panel-solid);
   box-shadow: var(--shadow);
+}
+
+.journal-drawer {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .chat-head {
@@ -2644,7 +2656,8 @@ h1 {
     font-size: 26px;
   }
 
-  .chat-drawer {
+  .chat-drawer,
+  .journal-drawer {
     top: 58px;
     right: 8px;
     bottom: calc(var(--controls-height) + 52px);
@@ -2652,10 +2665,15 @@ h1 {
     width: auto;
   }
 
-  .chat-toggle {
+  .chat-toggle,
+  .journal-toggle {
     right: max(8px, env(safe-area-inset-right));
     bottom: calc(var(--controls-height) + 8px);
     min-height: 36px;
+  }
+
+  .journal-toggle {
+    bottom: calc(var(--controls-height) + 50px);
   }
 
   .map-tools {
@@ -2684,12 +2702,17 @@ h1 {
     max-height: none;
   }
 
-  .chat-drawer {
+  .chat-drawer,
+  .journal-drawer {
     bottom: calc(var(--controls-height) + 52px);
   }
 
   .chat-toggle {
     bottom: calc(var(--controls-height) + 8px);
+  }
+
+  .journal-toggle {
+    bottom: calc(var(--controls-height) + 50px);
   }
 }
 
@@ -2746,7 +2769,8 @@ h1 {
   }
 
   .map-tools,
-  .chat-toggle {
+  .chat-toggle,
+  .journal-toggle {
     right: calc(var(--controls-width) + 16px);
   }
 
@@ -2759,7 +2783,12 @@ h1 {
     bottom: 16px;
   }
 
-  .chat-drawer {
+  .journal-toggle {
+    bottom: 66px;
+  }
+
+  .chat-drawer,
+  .journal-drawer {
     right: calc(var(--controls-width) + 16px);
     bottom: 68px;
   }

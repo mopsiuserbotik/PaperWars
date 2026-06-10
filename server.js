@@ -81,6 +81,7 @@ const CONSTRUCTION_MS = 1_500;
 const SHAHED_FLIGHT_MS = 17_040;
 const NUKE_FLIGHT_MS = 2_400;
 const ROCKET_FLIGHT_MS = 1_050;
+const PICKUP_SHAHED_INTERCEPT_RADIUS = 2;
 const SHAHED_ACTION_THROTTLE_MS = 900;
 const EPIDEMIC_TICK_MS = 12_000;
 const EPIDEMIC_HOSPITALS_REQUIRED = 3;
@@ -221,6 +222,7 @@ const LOBBY_INCOME_DEFAULTS = {
 
 
 const UNITS = {
+  pickup: { label: "Пикап", icon: "🚗", cost: { pop: 1, gold: 22, iron: 6, ammo: 2 }, power: 0, movable: true, stack: false },
   rpg: { label: "Гранатометчик", icon: "🎯", cost: { pop: 1, gold: 6, iron: 1, ammo: 1 }, power: 1, movable: true, stack: false },
   inf: { label: "Пехота", icon: "⚔️", cost: { pop: 1, gold: 2 }, power: 1, movable: true, stack: true },
   tank: { label: "Танк", icon: "🚜", cost: { pop: 2, gold: 18, iron: 8 }, power: 3, movable: true, stack: false },
@@ -236,7 +238,7 @@ const UNITS = {
 };
 
 const NUCLEAR_COST = { gold: 90, iron: 30, uranium: 20, pop: 3 };
-const SCRAPPABLE_UNITS = ["tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "boat", "cruiser"];
+const SCRAPPABLE_UNITS = ["tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "pickup", "boat", "cruiser"];
 const COOLDOWNS = {
   rpg: 15_000,
   tank: 10_000,
@@ -251,10 +253,9 @@ const MLRS_INFANTRY_KILL_RATIO = 0.5;
 const MLRS_TECH_HIT_CHANCE = 0.6;
 const RPG_DESTROY_CHANCE = 0.6;
 const DRONE_DESTROY_CHANCE = 0.6;
-const COUNTER_INTEL_PENALTY = 0.16;
-const COUNTER_INTEL_PENALTY_CAP = 0.35;
-const UNIT_KEYS = ["inf", "rpg", "tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "saboteur", "boat", "cruiser"];
-const TECH_SFX_UNITS = ["tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "boat", "cruiser"];
+const COUNTER_INTEL_SPECIAL_OP_MULTIPLIER = 0.5;
+const UNIT_KEYS = ["inf", "rpg", "tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "pickup", "saboteur", "boat", "cruiser"];
+const TECH_SFX_UNITS = ["tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "pickup", "boat", "cruiser"];
 const WEAPON_COOLDOWN_KEYS = ["rpg", "tank", "rocket", "mlrs", "cruiser"];
 const STATIC_DEPLOY_UNITS = new Set(["rocket", "aa", "aaPlus", "ew"]);
 
@@ -685,6 +686,7 @@ function attachWebSocket(socket, req) {
     waitingForDrain: false,
     lastMapVersionSent: -1,
     lastChatVersionSent: -1,
+    lastJournalVersionSent: -1,
     lastNukeActionAt: 0,
     lastNukeThrottleNoticeAt: 0,
     lastBacklogLogAt: 0,
@@ -813,6 +815,7 @@ function attachClientToGame(client, room, playerId) {
   client.spectator = false;
   client.lastMapVersionSent = -1;
   client.lastChatVersionSent = -1;
+  client.lastJournalVersionSent = -1;
   client.pendingState = null;
 
   const player = room.players[playerId] || createPlayer(playerId);
@@ -1019,12 +1022,19 @@ function mergePendingState(previous, next) {
   }
 
   const state = { ...next.state };
-  if (!state.map && previous.state?.map) {
+  if (!state.map && !state.mapPatch && previous.state?.map) {
     state.map = previous.state.map;
+  }
+  if (!state.map && !state.mapPatch && previous.state?.mapPatch) {
+    state.mapPatch = previous.state.mapPatch;
   }
   if (!state.chat && previous.state?.chat) {
     state.chat = previous.state.chat;
     state.chatVersion = previous.state.chatVersion;
+  }
+  if (!state.journal && previous.state?.journal) {
+    state.journal = previous.state.journal;
+    state.journalVersion = previous.state.journalVersion;
   }
   return { ...next, state };
 }
@@ -1073,11 +1083,14 @@ function flushPendingStateOnDrain(client) {
     const pendingState = client.pendingState;
     client.pendingState = null;
     if (send(client, pendingState) && pendingState.type === "state") {
-      if (pendingState.state?.map) {
+      if (pendingState.state?.map || pendingState.state?.mapPatch) {
         client.lastMapVersionSent = pendingState.state.mapVersion;
       }
       if (pendingState.state?.chat) {
         client.lastChatVersionSent = pendingState.state.chatVersion ?? clientGame(client)?.chatVersion ?? 0;
+      }
+      if (pendingState.state?.journal) {
+        client.lastJournalVersionSent = pendingState.state.journalVersion ?? clientGame(client)?.journalVersion ?? 0;
       }
     }
   });
@@ -1112,6 +1125,11 @@ function emitFlight(kind, from, to, duration, options = {}) {
     at: Date.now(),
     ...options
   });
+}
+
+function emitFlightCancel(id) {
+  if (!id) return;
+  broadcast({ type: "flightCancel", id });
 }
 
 function emitReport(x, y, text, kind = "info") {
@@ -1149,6 +1167,12 @@ function handleMessage(client, message) {
 }
 
 function handleGameMessage(client, message) {
+  if (message.type === "syncMap") {
+    client.lastMapVersionSent = -1;
+    sendState(client);
+    return;
+  }
+
   if (message.type === "leaveRoom") {
     handleLeaveRoom(client);
     return;
@@ -1338,7 +1362,7 @@ function handleChat(client, message) {
 function addChatEntry(entry, options = {}) {
   const fullEntry = {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    type: entry.type || "system",
+    type: entry.type || "user",
     playerId: entry.playerId || null,
     name: entry.name || "",
     color: entry.color || "#555",
@@ -1357,12 +1381,9 @@ function addChatEntry(entry, options = {}) {
       }
     }
   }
-  if (entry.sound) {
-    emitSfx(entry.sound, 0, 0, { system: true });
-  }
 }
 
-function addSystemEvent(text, options = {}) {
+function addSystemEventLegacy(text, options = {}) {
   addChatEntry({
     type: "system",
     name: "Событие",
@@ -1370,6 +1391,34 @@ function addSystemEvent(text, options = {}) {
     text,
     sound: options.sound
   }, options);
+}
+
+function addJournalEntry(text, options = {}) {
+  const fullEntry = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    type: options.type || "battle",
+    text: cleanText(text, 220),
+    at: Date.now()
+  };
+
+  if (!fullEntry.text) return;
+  game.journal.push(fullEntry);
+  game.journal = game.journal.slice(-80);
+  game.journalVersion += 1;
+  if (options.broadcastNow !== false) {
+    for (const client of clientsForCurrentGame()) {
+      if (send(client, { type: "journal", entry: fullEntry, journal: game.journal, journalVersion: game.journalVersion })) {
+        client.lastJournalVersionSent = game.journalVersion;
+      }
+    }
+  }
+  if (options.sound) {
+    emitSfx(options.sound, 0, 0, { system: true });
+  }
+}
+
+function addSystemEvent(text, options = {}) {
+  addJournalEntry(text, options);
 }
 
 function handleLeaveRoom(client) {
@@ -1385,6 +1434,7 @@ function closeCurrentRoom(message) {
   const roomClients = clientsForCurrentGame();
   logServer("roomClosed", { room: roomDetails(room), message });
   clearPendingStateBroadcast();
+  clearActiveShahedTimers(room);
   clearInterval(room.timer);
   room.timer = null;
   games.delete(room.id);
@@ -1397,6 +1447,7 @@ function closeCurrentRoom(message) {
     client.waitingForDrain = false;
     client.lastMapVersionSent = -1;
     client.lastChatVersionSent = -1;
+    client.lastJournalVersionSent = -1;
     send(client, { type: "roomClosed", message });
     sendHello(client);
     send(client, emptyLobbyPayload());
@@ -1434,6 +1485,7 @@ function handleRestart(client) {
     clientItem.pendingState = null;
     clientItem.lastMapVersionSent = -1;
     clientItem.lastChatVersionSent = -1;
+    clientItem.lastJournalVersionSent = -1;
   }
 
   broadcastLobby();
@@ -2073,8 +2125,7 @@ function handleSpecialOp(client, message) {
   }
 
   const ideology = IDEOLOGIES[player.ideology] || {};
-  const defensePenalty = counterIntelPenalty(targetId);
-  const chance = clamp(definition.chance + (ideology.specialOp || 0) - defensePenalty, 0.08, 0.9);
+  const chance = counterIntelAdjustedChance(clamp(definition.chance + (ideology.specialOp || 0), 0.08, 0.9), targetId);
   player.specialOpCooldown = now + SPECIAL_OP_COOLDOWN_MS;
   sendInfo(client, `Спецоперация "${definition.label}" против ${target.country} начата. Результат через 30 секунд.`);
   const matchStartedAt = game.startedAt;
@@ -2108,9 +2159,12 @@ function resolveSpecialOp(playerId, targetId, operation, chance) {
   broadcastState();
 }
 
-function counterIntelPenalty(playerId) {
-  const count = countBuildings(playerId).counterIntel || 0;
-  return Math.min(COUNTER_INTEL_PENALTY_CAP, count * COUNTER_INTEL_PENALTY);
+function counterIntelAdjustedChance(chance, targetId) {
+  return playerHasCounterIntel(targetId) ? chance * COUNTER_INTEL_SPECIAL_OP_MULTIPLIER : chance;
+}
+
+function playerHasCounterIntel(playerId) {
+  return (countBuildings(playerId).counterIntel || 0) > 0;
 }
 
 function applySpecialOpResult(playerId, targetId, operation) {
@@ -2937,6 +2991,7 @@ function cancelSupportBetween(a, b) {
 function emitMovementSfx(moved, cell, playerId) {
   if (!cell) return;
   if ((moved.drone || 0) > 0) emitSfx("drone_run", cell.x, cell.y, { playerId });
+  if ((moved.pickup || 0) > 0) emitSfx("Pikap", cell.x, cell.y, { playerId });
   if ((moved.tank || 0) > 0) emitSfx("tank", cell.x, cell.y, { playerId });
   if ((moved.mlrs || 0) > 0) emitSfx("rszo", cell.x, cell.y, { playerId });
 }
@@ -2969,6 +3024,7 @@ function handleMove(client, message) {
   const hasEwRequest = Object.prototype.hasOwnProperty.call(message, "ew");
   const hasDroneRequest = Object.prototype.hasOwnProperty.call(message, "drone");
   const hasSaboteurRequest = Object.prototype.hasOwnProperty.call(message, "saboteur");
+  const hasPickupRequest = Object.prototype.hasOwnProperty.call(message, "pickup");
   const hasBoatRequest = Object.prototype.hasOwnProperty.call(message, "boat");
   const hasCruiserRequest = Object.prototype.hasOwnProperty.call(message, "cruiser");
   const requestedInf = hasInfRequest ? Math.max(0, Math.floor(Number(message.inf || 0))) : sourceUnits.inf;
@@ -2976,9 +3032,10 @@ function handleMove(client, message) {
   const requestedEw = hasEwRequest ? Math.max(0, Math.floor(Number(message.ew || 0))) : 0;
   const requestedDrone = hasDroneRequest ? Math.max(0, Math.floor(Number(message.drone || 0))) : 0;
   const requestedSaboteur = hasSaboteurRequest ? Math.max(0, Math.floor(Number(message.saboteur || 0))) : 0;
+  const requestedPickup = hasPickupRequest ? Math.max(0, Math.floor(Number(message.pickup || 0))) : 0;
   const moved = emptyUnits();
 
-  const onlyCovertRequested = (requestedDrone > 0 || requestedSaboteur > 0) && requestedInf <= 0 && requestedRpg <= 0 && requestedEw <= 0 && !message.tank && !message.mlrs && !message.boat && !message.cruiser;
+  const onlyCovertRequested = (requestedDrone > 0 || requestedSaboteur > 0) && requestedInf <= 0 && requestedRpg <= 0 && requestedEw <= 0 && !message.tank && !message.mlrs && !message.pickup && !message.boat && !message.cruiser;
   if (onlyCovertRequested) {
     moved.drone = Math.min(sourceUnits.drone, requestedDrone);
     moved.saboteur = Math.min(sourceUnits.saboteur, requestedSaboteur);
@@ -3145,6 +3202,7 @@ function handleMove(client, message) {
   moved.ew = hasEwRequest ? Math.min(sourceUnits.ew, requestedEw, 1) : 0;
   moved.drone = hasDroneRequest ? Math.min(sourceUnits.drone, requestedDrone) : 0;
   moved.saboteur = hasSaboteurRequest ? Math.min(sourceUnits.saboteur, requestedSaboteur) : 0;
+  moved.pickup = hasPickupRequest ? Math.min(sourceUnits.pickup, requestedPickup, 1) : 0;
 
   if (movingUnitCount(moved) <= 0) {
     sendError(client, "На клетке нет подвижных войск.");
@@ -3160,6 +3218,10 @@ function handleMove(client, message) {
     sendError(client, "На клетке уже есть твой РСЗО.");
     return;
   }
+  if (moved.pickup && targetOwnUnits.pickup) {
+    sendError(client, "На клетке уже есть твой Пикап.");
+    return;
+  }
   if (moved.rpg && targetOwnUnits.rpg) {
     sendError(client, "На клетке уже есть твой гранатометчик.");
     return;
@@ -3168,12 +3230,12 @@ function handleMove(client, message) {
     sendError(client, "На клетке уже есть твой РЭБ.");
     return;
   }
-  if (moved.ew && (moved.inf + moved.rpg + moved.tank + moved.mlrs) <= 0) {
+  if (moved.ew && (moved.inf + moved.rpg + moved.tank + moved.mlrs + moved.pickup) <= 0) {
     sendError(client, "РЭБ нужно перевозить вместе с пехотой или техникой.");
     return;
   }
 
-  const ammoCost = movementAmmoCost(moved.inf + moved.rpg + moved.tank * 2 + moved.mlrs * 2 + moved.ew + moved.drone + moved.saboteur, playerId, from);
+  const ammoCost = movementAmmoCost(moved.inf + moved.rpg + moved.tank * 2 + moved.mlrs * 2 + moved.ew + moved.drone + moved.saboteur + moved.pickup, playerId, from);
   if (!canPay(player, { ammo: ammoCost })) {
     sendError(client, "Не хватает боеприпасов для движения.");
     return;
@@ -3188,6 +3250,7 @@ function handleMove(client, message) {
   sourceUnits.ew -= moved.ew;
   sourceUnits.drone -= moved.drone;
   sourceUnits.saboteur -= moved.saboteur;
+  sourceUnits.pickup -= moved.pickup;
   interceptDronesEnteringCell(playerId, to, moved);
   interceptShahedsEnteringCell(playerId, to, moved);
   if (movingUnitCount(moved) <= 0) {
@@ -3204,6 +3267,7 @@ function handleMove(client, message) {
   resolveMoveIntoCell(playerId, to, moved);
   applyMovedWeaponCooldowns(from, to, playerId, movedCooldowns);
   emitMovementSfx(moved, to, playerId);
+  updatePickupShahedInterceptions(Date.now());
   pruneWeaponCooldowns(from);
   pruneWeaponCooldowns(to);
   touchMap();
@@ -3218,7 +3282,7 @@ function handleMove(client, message) {
 }
 
 function resolveMoveIntoCell(playerId, cell, moved) {
-  if (unitPower(moved) <= 0 && ((moved.drone || 0) > 0 || (moved.saboteur || 0) > 0)) {
+  if (unitPower(moved) <= 0 && ((moved.drone || 0) > 0 || (moved.saboteur || 0) > 0 || (moved.pickup || 0) > 0)) {
     addUnits(unitsFor(cell, playerId), moved);
     return;
   }
@@ -3300,6 +3364,7 @@ function handleTankShot(client, message) {
     enemyUnits.aa = Math.max(0, enemyUnits.aa - 1);
     enemyUnits.aaPlus = Math.max(0, enemyUnits.aaPlus - 1);
     enemyUnits.ew = Math.max(0, enemyUnits.ew - 1);
+    enemyUnits.pickup = Math.max(0, enemyUnits.pickup - 1);
     enemyUnits.boat = Math.max(0, enemyUnits.boat - 1);
   }
 
@@ -3370,7 +3435,7 @@ function damageRpgCell(playerId, cell) {
   if (!cell) return null;
   for (const enemyId of damageableUnitIdsAtCell(playerId, cell)) {
     const enemyUnits = unitsFor(cell, enemyId);
-    const hit = ["tank", "mlrs", "rocket", "aaPlus", "aa", "ew"].find((unit) => (enemyUnits[unit] || 0) > 0);
+    const hit = ["tank", "mlrs", "rocket", "aaPlus", "aa", "pickup", "ew"].find((unit) => (enemyUnits[unit] || 0) > 0);
     if (!hit) continue;
     const label = UNITS[hit]?.label || hit;
     if (Math.random() >= RPG_DESTROY_CHANCE) {
@@ -3478,7 +3543,7 @@ function damageRocketCell(playerId, cell) {
       continue;
     }
     enemyUnits.inf = Math.max(0, enemyUnits.inf - (rain ? 2 : 4));
-    for (const unit of ["rpg", "tank", "rocket", "aa", "aaPlus", "boat", "mlrs", "cruiser"]) {
+    for (const unit of ["rpg", "tank", "rocket", "aa", "aaPlus", "pickup", "boat", "mlrs", "cruiser"]) {
       if ((enemyUnits[unit] || 0) > 0 && (!rain || Math.random() < 0.5)) {
         enemyUnits[unit] = Math.max(0, enemyUnits[unit] - 1);
       }
@@ -3502,7 +3567,7 @@ function damageMlrsCell(playerId, cell) {
       continue;
     }
     enemyUnits.inf = Math.max(0, enemyUnits.inf - Math.ceil((enemyUnits.inf || 0) * MLRS_INFANTRY_KILL_RATIO));
-    for (const unit of ["rpg", "tank", "rocket", "aa", "aaPlus", "mlrs", "boat"]) {
+    for (const unit of ["rpg", "tank", "rocket", "aa", "aaPlus", "pickup", "mlrs", "boat"]) {
       if ((enemyUnits[unit] || 0) > 0 && Math.random() < MLRS_TECH_HIT_CHANCE) {
         enemyUnits[unit] = Math.max(0, enemyUnits[unit] - 1);
       }
@@ -3808,7 +3873,18 @@ function launchShahedStrike(playerId, target, factory) {
   declareWarsForCellAttack(playerId, target);
   spend(player, UNITS.saboteur.cost);
   setCooldown(player, "saboteur");
-  emitFlight("shahed", factory, target, SHAHED_FLIGHT_MS, { playerId });
+  const shahedId = `shahed:${game.flightId + 1}`;
+  const activeShahed = {
+    id: shahedId,
+    playerId,
+    from: { x: factory.x, y: factory.y },
+    to: { x: target.x, y: target.y },
+    startedAt: Date.now(),
+    duration: SHAHED_FLIGHT_MS,
+    timer: null
+  };
+  game.activeShaheds.push(activeShahed);
+  emitFlight("shahed", factory, target, SHAHED_FLIGHT_MS, { id: shahedId, playerId });
   emitSfx("shahed", factory.x, factory.y, { playerId });
   addSystemEvent(`${player.country} запускает Шахед.`);
   broadcastState();
@@ -3816,13 +3892,15 @@ function launchShahedStrike(playerId, target, factory) {
   const room = game;
   const tx = target.x;
   const ty = target.y;
-  const timer = setTimeout(() => withGame(room, () => resolveShahedImpact(playerId, tx, ty)), SHAHED_FLIGHT_MS);
+  const timer = setTimeout(() => withGame(room, () => resolveShahedImpact(playerId, tx, ty, shahedId)), SHAHED_FLIGHT_MS);
+  activeShahed.timer = timer;
   timer.unref?.();
   return true;
 }
 
-function resolveShahedImpact(playerId, tx, ty) {
+function resolveShahedImpact(playerId, tx, ty, shahedId = null) {
   if (!game || game.ended) return;
+  if (shahedId && !consumeActiveShahed(shahedId, false)) return;
   const target = getCell(tx, ty);
   if (!target) return;
 
@@ -3995,10 +4073,13 @@ function createFreshGame() {
     lobbyCode: "",
     settings: defaultLobbySettings(),
     map: [],
+    mapCache: null,
     flatCells: null,
     flatCellsSource: null,
     chat: [],
     chatVersion: 0,
+    journal: [],
+    journalVersion: 0,
     createdAt: Date.now(),
     startedAt: null,
     ended: null,
@@ -4018,6 +4099,7 @@ function createFreshGame() {
     botTargetMemory: {},
     continuedWithBots: false,
     continueWinnerId: null,
+    activeShaheds: [],
     activeEvent: null,
     pendingEvent: null,
     nextRandomEventAt: 0,
@@ -4070,7 +4152,11 @@ function startGame() {
   game.lastStateBroadcastAt = 0;
   game.ended = null;
   game.chat = [];
+  game.chatVersion = 0;
+  game.journal = [];
+  game.journalVersion = 0;
   game.map = generateMap();
+  game.mapCache = null;
   game.flatCells = null;
   game.flatCellsSource = null;
   game.resourceRequests = [];
@@ -4118,6 +4204,7 @@ function startGame() {
 
   game.activeEvent = null;
   game.pendingEvent = null;
+  clearActiveShahedTimers();
   game.nextRandomEventAt = game.settings?.randomEvents === false ? 0 : Date.now() + RANDOM_EVENT_INTERVAL_MS;
   game.nextIncomeCheckAt = Date.now();
   game.botCursor = randomInt(0, Math.max(0, activeBotIds().length - 1));
@@ -4130,6 +4217,7 @@ function startGame() {
     client.pendingState = null;
     client.lastMapVersionSent = -1;
     client.lastChatVersionSent = -1;
+    client.lastJournalVersionSent = -1;
   }
   clearInterval(game.timer);
   const room = game;
@@ -4297,6 +4385,10 @@ function gameLoop() {
   if (updateAirDefenseInterceptions()) {
     changed = true;
     mapChanged = true;
+  }
+
+  if (updatePickupShahedInterceptions(now)) {
+    changed = true;
   }
 
   if (markExpiredDefeats(now)) {
@@ -4556,7 +4648,7 @@ function tryAnarchistLootOperation(playerId) {
 
   player.specialOpCooldown = now + SPECIAL_OP_COOLDOWN_MS;
   const matchStartedAt = game.startedAt;
-  const chance = clamp(definition.chance - counterIntelPenalty(targetId), 0.08, 0.9);
+  const chance = counterIntelAdjustedChance(clamp(definition.chance, 0.08, 0.9), targetId);
   const room = game;
   const timer = setTimeout(() => {
     if (games.get(room.id) !== room) return;
@@ -5180,6 +5272,71 @@ function updateAirDefenseInterceptions() {
   });
   if (changed) applyArmyLossEffects(lossSnapshot, null);
   return changed;
+}
+
+function updatePickupShahedInterceptions(now = Date.now()) {
+  if (!Array.isArray(game.activeShaheds) || !game.activeShaheds.length) return false;
+  let changed = false;
+  for (const shahed of [...game.activeShaheds]) {
+    if (!shahed || !game.players[shahed.playerId] || isDefeated(shahed.playerId)) {
+      consumeActiveShahed(shahed?.id, true);
+      continue;
+    }
+    const pos = shahedPosition(shahed, now);
+    const blocker = findPickupShahedInterceptor(shahed.playerId, pos);
+    if (!blocker) continue;
+
+    consumeActiveShahed(shahed.id, true);
+    emitFlightCancel(shahed.id);
+    emitSfx("pvo", blocker.cell.x, blocker.cell.y, { playerId: blocker.playerId });
+    emitExplosions([{
+      x: clamp(Math.round(pos.x), 0, WIDTH - 1),
+      y: clamp(Math.round(pos.y), 0, HEIGHT - 1),
+      kind: "aa"
+    }]);
+    addSystemEvent(`${game.players[blocker.playerId]?.country || "Пикап"} сбивает Шахед у ${Math.round(pos.x) + 1}:${Math.round(pos.y) + 1}.`);
+    changed = true;
+  }
+  return changed;
+}
+
+function findPickupShahedInterceptor(attackerId, pos) {
+  let found = null;
+  forEachCell((cell) => {
+    if (found || distance(cell, pos) > PICKUP_SHAHED_INTERCEPT_RADIUS) return;
+    for (const playerId of hostilePlayerIds(attackerId)) {
+      if ((unitsFor(cell, playerId).pickup || 0) > 0) {
+        found = { cell, playerId };
+        return;
+      }
+    }
+  });
+  return found;
+}
+
+function shahedPosition(shahed, now = Date.now()) {
+  const progress = clamp((now - (shahed.startedAt || now)) / Math.max(1, shahed.duration || SHAHED_FLIGHT_MS), 0, 1);
+  return {
+    x: shahed.from.x + (shahed.to.x - shahed.from.x) * progress,
+    y: shahed.from.y + (shahed.to.y - shahed.from.y) * progress
+  };
+}
+
+function consumeActiveShahed(shahedId, clearTimer = true) {
+  if (!shahedId || !Array.isArray(game.activeShaheds)) return null;
+  const index = game.activeShaheds.findIndex((shahed) => shahed.id === shahedId);
+  if (index < 0) return null;
+  const [shahed] = game.activeShaheds.splice(index, 1);
+  if (clearTimer && shahed.timer) clearTimeout(shahed.timer);
+  return shahed;
+}
+
+function clearActiveShahedTimers(room = game) {
+  if (!Array.isArray(room?.activeShaheds)) return;
+  for (const shahed of room.activeShaheds) {
+    if (shahed?.timer) clearTimeout(shahed.timer);
+  }
+  room.activeShaheds = [];
 }
 
 function completeConstruction(cell, construction) {
@@ -7081,10 +7238,11 @@ function flushStateSnapshot() {
   game.stateVersion += 1;
   game.lastStateBroadcastAt = Date.now();
   const stateSnapshot = serializeState(false);
-  const mapSnapshot = hasClientNeedingMap() ? serializeMap() : null;
+  const mapUpdate = hasClientNeedingMap() ? prepareMapUpdate() : null;
   const chatSnapshot = hasClientNeedingChat() ? game.chat : null;
+  const journalSnapshot = hasClientNeedingJournal() ? game.journal : null;
   for (const client of clientsForCurrentGame()) {
-    sendState(client, stateSnapshot, mapSnapshot, chatSnapshot);
+    sendState(client, stateSnapshot, mapUpdate, chatSnapshot, journalSnapshot);
   }
 }
 
@@ -7109,6 +7267,37 @@ function touchMap() {
   game.mapVersion += 1;
 }
 
+function prepareMapUpdate(now = Date.now()) {
+  const previous = game.mapCache;
+  if (previous?.version === game.mapVersion) return previous;
+
+  const map = serializeMap(now);
+  const patch = previous?.map ? diffSerializedMaps(previous.map, map) : null;
+  game.mapCache = {
+    version: game.mapVersion,
+    map,
+    patchFromVersion: previous?.version ?? -1,
+    patch
+  };
+  return game.mapCache;
+}
+
+function diffSerializedMaps(previousMap, nextMap) {
+  const cells = [];
+  for (let y = 0; y < nextMap.length; y += 1) {
+    const nextRow = nextMap[y] || [];
+    const previousRow = previousMap[y] || [];
+    for (let x = 0; x < nextRow.length; x += 1) {
+      const nextCell = nextRow[x];
+      if (!nextCell) continue;
+      if (JSON.stringify(previousRow[x]) !== JSON.stringify(nextCell)) {
+        cells.push(nextCell);
+      }
+    }
+  }
+  return cells;
+}
+
 function hasClientNeedingMap() {
   for (const client of clientsForCurrentGame()) {
     if (client.lastMapVersionSent !== game.mapVersion) return true;
@@ -7123,12 +7312,34 @@ function hasClientNeedingChat() {
   return false;
 }
 
-function sendState(client, stateSnapshot = serializeState(false), mapSnapshot = null, chatSnapshot = null) {
+function hasClientNeedingJournal() {
+  for (const client of clientsForCurrentGame()) {
+    if (client.lastJournalVersionSent !== game.journalVersion) return true;
+  }
+  return false;
+}
+
+function sendState(client, stateSnapshot = serializeState(false), mapUpdate = null, chatSnapshot = null, journalSnapshot = null) {
   const mustSendMap = client.lastMapVersionSent !== game.mapVersion || Boolean(stateSnapshot.map);
   const mustSendChat = client.lastChatVersionSent !== game.chatVersion || Boolean(stateSnapshot.chat);
+  const mustSendJournal = client.lastJournalVersionSent !== game.journalVersion || Boolean(stateSnapshot.journal);
   const stateForClient = { ...stateSnapshot };
-  if (mustSendMap) stateForClient.map = stateSnapshot.map || mapSnapshot || serializeMap();
+  if (mustSendMap) {
+    const update = mapUpdate || prepareMapUpdate();
+    if (stateSnapshot.map) {
+      stateForClient.map = stateSnapshot.map;
+    } else if (client.lastMapVersionSent === update.patchFromVersion && Array.isArray(update.patch)) {
+      stateForClient.mapPatch = {
+        fromVersion: update.patchFromVersion,
+        toVersion: update.version,
+        cells: update.patch
+      };
+    } else {
+      stateForClient.map = update.map || serializeMap();
+    }
+  }
   if (mustSendChat) stateForClient.chat = stateSnapshot.chat || chatSnapshot || game.chat;
+  if (mustSendJournal) stateForClient.journal = stateSnapshot.journal || journalSnapshot || game.journal;
   const privatePlayer = client.playerId ? game.players[client.playerId] : null;
   const personalizedState = {
     ...stateForClient,
@@ -7148,6 +7359,9 @@ function sendState(client, stateSnapshot = serializeState(false), mapSnapshot = 
   }
   if (sent && mustSendChat) {
     client.lastChatVersionSent = game.chatVersion;
+  }
+  if (sent && mustSendJournal) {
+    client.lastJournalVersionSent = game.journalVersion;
   }
 }
 
@@ -7201,6 +7415,7 @@ function serializeState(includeMap = true) {
     activeEvent: serializeTimedEvent(game.activeEvent, now),
     pendingEvent: serializeTimedEvent(game.pendingEvent, now),
     chatVersion: game.chatVersion,
+    journalVersion: game.journalVersion,
     ended: game.ended,
     serverTime: now
   };
@@ -7739,7 +7954,7 @@ function findRecruitCell(playerId, unitKind = "") {
            viable[0];
   }
 
-  if (["tank", "mlrs", "drone", "saboteur"].includes(unitKind)) {
+  if (["tank", "mlrs", "drone", "pickup", "saboteur"].includes(unitKind)) {
     return viable.find((cell) => cell.building?.type === "factory") || viable[0];
   }
   return viable.find((cell) => cell.building?.type === "barracks") || viable[0];
@@ -8070,7 +8285,7 @@ function computeStats(playerId) {
   const cached = statsCache.get(cacheKey);
   if (cached && cached.mapVersion === game.mapVersion) return cached.stats;
 
-  const stats = { cells: 0, power: 0, inf: 0, rpg: 0, tank: 0, rocket: 0, aa: 0, aaPlus: 0, ew: 0, mlrs: 0, drone: 0, saboteur: 0, boat: 0, cruiser: 0 };
+  const stats = { cells: 0, power: 0, inf: 0, rpg: 0, tank: 0, rocket: 0, aa: 0, aaPlus: 0, ew: 0, mlrs: 0, drone: 0, pickup: 0, saboteur: 0, boat: 0, cruiser: 0 };
   forEachCell((cell) => {
     if (cell.owner === playerId) stats.cells += 1;
     const units = unitsFor(cell, playerId);
@@ -8089,7 +8304,7 @@ function formatResources(resources) {
 }
 
 function emptyUnits() {
-  return { inf: 0, rpg: 0, tank: 0, rocket: 0, aa: 0, aaPlus: 0, ew: 0, mlrs: 0, drone: 0, saboteur: 0, boat: 0, cruiser: 0 };
+  return { inf: 0, rpg: 0, tank: 0, rocket: 0, aa: 0, aaPlus: 0, ew: 0, mlrs: 0, drone: 0, pickup: 0, saboteur: 0, boat: 0, cruiser: 0 };
 }
 
 function emptyWeaponCooldowns() {
@@ -8140,7 +8355,7 @@ function unitPower(units) {
 }
 
 function movingUnitCount(units) {
-  return (units.inf || 0) + (units.rpg || 0) + (units.tank || 0) + (units.mlrs || 0) + (units.ew || 0) + (units.drone || 0) + (units.saboteur || 0) + (units.boat || 0) + (units.cruiser || 0);
+  return (units.inf || 0) + (units.rpg || 0) + (units.tank || 0) + (units.mlrs || 0) + (units.ew || 0) + (units.drone || 0) + (units.pickup || 0) + (units.saboteur || 0) + (units.boat || 0) + (units.cruiser || 0);
 }
 
 function scaleUnits(units, ratio, keepOneIfNeeded) {
@@ -8154,6 +8369,7 @@ function scaleUnits(units, ratio, keepOneIfNeeded) {
   scaled.ew = (units.ew || 0) && ratio >= 0.5 ? 1 : 0;
   scaled.mlrs = (units.mlrs || 0) && ratio >= 0.4 ? 1 : 0;
   scaled.drone = Math.floor((units.drone || 0) * ratio);
+  scaled.pickup = (units.pickup || 0) && ratio >= 0.5 ? 1 : 0;
   scaled.boat = (units.boat || 0) && ratio >= 0.5 ? 1 : 0;
   scaled.cruiser = (units.cruiser || 0) && ratio >= 0.5 ? 1 : 0;
 
@@ -8378,14 +8594,14 @@ function controlsCell(playerId, cell) {
 function hostileUnitIdsAtCell(playerId, cell) {
   return hostilePlayerIds(playerId).filter((id) => {
     const units = unitsFor(cell, id);
-    return unitPower(units) > 0 || (units.ew || 0) > 0 || (units.boat || 0) > 0 || (units.cruiser || 0) > 0;
+    return unitPower(units) > 0 || (units.ew || 0) > 0 || (units.pickup || 0) > 0 || (units.boat || 0) > 0 || (units.cruiser || 0) > 0;
   });
 }
 
 function damageableUnitIdsAtCell(playerId, cell) {
   return damageablePlayerIds(playerId).filter((id) => {
     const units = unitsFor(cell, id);
-    return unitPower(units) > 0 || (units.ew || 0) > 0 || (units.boat || 0) > 0 || (units.cruiser || 0) > 0;
+    return unitPower(units) > 0 || (units.ew || 0) > 0 || (units.pickup || 0) > 0 || (units.boat || 0) > 0 || (units.cruiser || 0) > 0;
   });
 }
 
