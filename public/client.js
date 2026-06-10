@@ -268,8 +268,11 @@ const SFX_PLAY_LIMIT_MS = {
   drone_run: 2000,
   tank: 2000
 };
+const MAX_SFX_OVERLAP_PER_NAME = 8;
 let eventSfxSources = Object.fromEntries(SFX_NAMES.map((name) => [name, `/sfx/${name}.mp3`]));
 const eventSfxPlayers = {};
+const activeEventSfx = {};
+let rainAmbientPlayer = null;
 let sfxUnlocked = false;
 let lastExplosionSfxAt = 0;
 let lastNukeRequestAt = 0;
@@ -744,6 +747,7 @@ function handleServerMessage(message) {
     impactSmokes = [];
     shotEffects = [];
     flightEffects = [];
+    stopRainAmbientSfx();
     hqRebuildEnds = {};
     unreadChatCount = 0;
     closeChat();
@@ -774,6 +778,7 @@ function handleServerMessage(message) {
     impactSmokes = [];
     shotEffects = [];
     flightEffects = [];
+    stopRainAmbientSfx();
     hqRebuildEnds = {};
     unreadChatCount = 0;
     closeChat();
@@ -794,6 +799,7 @@ function handleServerMessage(message) {
     applyPendingMoveSelection();
     rememberCooldowns();
     noticeDisconnectedOpponent();
+    syncAmbientSfx();
     scheduleRenderGame();
   }
 
@@ -1562,13 +1568,20 @@ function setFlightPath(node, effect, width, height, now) {
   const toLeft = ((effect.to.x + 0.5) / width) * 100;
   const toTop = ((effect.to.y + 0.5) / height) * 100;
   const angle = Math.atan2(effect.to.y - effect.from.y, effect.to.x - effect.from.x) * 180 / Math.PI;
+  const visualAngle = angle + flightIconAngleOffset(effect.kind);
   node.style.setProperty("--from-left", `${fromLeft}%`);
   node.style.setProperty("--from-top", `${fromTop}%`);
   node.style.setProperty("--to-left", `${toLeft}%`);
   node.style.setProperty("--to-top", `${toTop}%`);
-  node.style.setProperty("--flight-angle", `${angle + 90}deg`);
+  node.style.setProperty("--flight-angle", `${visualAngle}deg`);
   node.style.setProperty("--effect-duration", `${duration}ms`);
   node.style.animationDelay = `-${Math.min(age, duration)}ms`;
+}
+
+function flightIconAngleOffset(kind) {
+  if (kind === "shahed") return 0;
+  if (kind === "rocket") return 45;
+  return 90;
 }
 
 function explosionScale(kind) {
@@ -3625,6 +3638,7 @@ function updateLivePanels() {
 
 function unlockSfxAudio() {
   sfxUnlocked = true;
+  syncAmbientSfx();
 }
 
 function playSfx(name, detail = {}) {
@@ -3680,23 +3694,70 @@ function playEventSfx(name, detail = {}) {
   if (!sfxUnlocked) return;
   const src = eventSfxSources[name];
   if (!src) return;
-  const overlap = name === "rszo_hit";
-  const audio = overlap ? new Audio(src) : (eventSfxPlayers[name] || new Audio(src));
-  if (!overlap) eventSfxPlayers[name] = audio;
-  const playToken = `${Date.now()}:${Math.random()}`;
-  audio.dataset.playToken = playToken;
-  audio.pause();
+  if (name === "rain") {
+    startRainAmbientSfx();
+    return;
+  }
+  const audio = createEventSfxAudio(name, src);
+  const active = activeEventSfx[name] || [];
+  activeEventSfx[name] = active.filter((item) => !item.ended && !item.paused);
+  while (activeEventSfx[name].length >= MAX_SFX_OVERLAP_PER_NAME) {
+    const old = activeEventSfx[name].shift();
+    old.pause();
+    old.currentTime = 0;
+  }
   audio.currentTime = 0;
   audio.volume = sfxVolumeFor(name, detail);
-  audio.play().catch(() => {});
+  activeEventSfx[name].push(audio);
+  const cleanup = () => {
+    activeEventSfx[name] = (activeEventSfx[name] || []).filter((item) => item !== audio);
+  };
+  audio.addEventListener("ended", cleanup, { once: true });
+  audio.play().catch(() => cleanup());
   const limit = SFX_PLAY_LIMIT_MS[name] || 0;
   if (limit > 0) {
     setTimeout(() => {
-      if (audio.dataset.playToken !== playToken) return;
       audio.pause();
       audio.currentTime = 0;
+      cleanup();
     }, limit);
   }
+}
+
+function createEventSfxAudio(name, src) {
+  const template = eventSfxPlayers[name];
+  const audio = template?.cloneNode ? template.cloneNode(true) : new Audio(src);
+  audio.preload = "auto";
+  audio.dataset.src = src;
+  return audio;
+}
+
+function syncAmbientSfx() {
+  if (state?.activeEvent?.type === "rain") {
+    startRainAmbientSfx();
+  } else {
+    stopRainAmbientSfx();
+  }
+}
+
+function startRainAmbientSfx() {
+  if (!sfxUnlocked || rainAmbientPlayer) return;
+  const src = eventSfxSources.rain;
+  if (!src) return;
+  const audio = createEventSfxAudio("rain", src);
+  audio.loop = true;
+  audio.volume = 0.38;
+  rainAmbientPlayer = audio;
+  audio.play().catch(() => {
+    if (rainAmbientPlayer === audio) rainAmbientPlayer = null;
+  });
+}
+
+function stopRainAmbientSfx() {
+  if (!rainAmbientPlayer) return;
+  rainAmbientPlayer.pause();
+  rainAmbientPlayer.currentTime = 0;
+  rainAmbientPlayer = null;
 }
 
 function sfxVolumeFor(name, detail = {}) {

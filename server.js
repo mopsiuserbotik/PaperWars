@@ -261,10 +261,14 @@ const STATIC_DEPLOY_UNITS = new Set(["rocket", "aa", "aaPlus", "ew"]);
 const WS_PING_INTERVAL_MS = 10_000;
 const MAX_WS_BUFFER_BYTES = 64 * 1024;
 const MAX_WS_PAYLOAD_BYTES = 32 * 1024;
-const MAX_WS_BACKLOG_BYTES = 64 * 1024;
+const MAX_WS_BACKLOG_BYTES = 512 * 1024;
 const MESSAGE_WINDOW_MS = 5_000;
 const MAX_MESSAGES_PER_WINDOW = 80;
-const STATE_BROADCAST_DELAY_MS = 16;
+const STATE_BROADCAST_DELAY_MS = 120;
+const STATE_BROADCAST_MIN_INTERVAL_MS = 120;
+const SLOW_GAME_LOOP_MS = 350;
+const GAME_LOOP_DRIFT_WARN_MS = 1_500;
+const SERVER_STATS_LOG_MS = 60_000;
 const NUKE_ACTION_THROTTLE_MS = 900;
 const LOBBY_CODE_LENGTH = 4;
 const EMPTY_LOBBY_TTL_MS = 30 * 60_000;
@@ -273,6 +277,53 @@ const EMPTY_RUNNING_TTL_MS = 20 * 60_000;
 const clients = new Set();
 const games = new Map();
 let game = null;
+
+function logServer(event, details = {}) {
+  let suffix = "";
+  try {
+    suffix = Object.keys(details).length ? ` ${JSON.stringify(details)}` : "";
+  } catch (error) {
+    suffix = " {\"log\":\"unserializable\"}";
+  }
+  console.log(`[paperwars] ${new Date().toISOString()} ${event}${suffix}`);
+}
+
+function errorDetails(error) {
+  return {
+    message: error?.message || String(error),
+    stack: String(error?.stack || "").slice(0, 1600)
+  };
+}
+
+function memoryDetails() {
+  const usage = process.memoryUsage();
+  return {
+    rssMb: Math.round(usage.rss / 1024 / 1024),
+    heapUsedMb: Math.round(usage.heapUsed / 1024 / 1024),
+    heapTotalMb: Math.round(usage.heapTotal / 1024 / 1024)
+  };
+}
+
+function roomDetails(room) {
+  if (!room) return null;
+  return {
+    id: room.id,
+    status: room.status,
+    clients: clientsForGame(room).length,
+    players: Object.values(room.players || {}).filter((player) => player?.joined && !player.isBot).length,
+    bots: Object.values(room.players || {}).filter((player) => player?.joined && player.isBot).length,
+    ageSec: room.createdAt ? Math.round((Date.now() - room.createdAt) / 1000) : 0,
+    runningSec: room.startedAt ? Math.round((Date.now() - room.startedAt) / 1000) : 0
+  };
+}
+
+process.on("uncaughtException", (error) => {
+  logServer("uncaughtException", { error: errorDetails(error), memory: memoryDetails() });
+});
+
+process.on("unhandledRejection", (reason) => {
+  logServer("unhandledRejection", { error: errorDetails(reason), memory: memoryDetails() });
+});
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -326,18 +377,24 @@ server.on("upgrade", (req, socket) => {
 
 server.listen(PORT, () => {
   console.log(`Paper Wars server: http://localhost:${PORT}`);
+  logServer("started", { port: PORT, memory: memoryDetails() });
 });
 
 setInterval(() => {
   for (const client of clients) {
     if (client.socket.destroyed) {
-      detachClient(client);
+      detachClient(client, "destroyed");
       continue;
     }
 
     if (!client.alive && Date.now() - client.lastSeen > WS_PING_INTERVAL_MS) {
+      logServer("clientTimeout", {
+        room: roomDetails(clientGame(client)),
+        playerId: client.playerId,
+        writableLength: client.socket.writableLength
+      });
       client.socket.destroy();
-      detachClient(client);
+      detachClient(client, "timeout");
       continue;
     }
 
@@ -348,6 +405,15 @@ setInterval(() => {
   }
   cleanupEmptyGames();
 }, WS_PING_INTERVAL_MS).unref?.();
+
+setInterval(() => {
+  if (!clients.size && !games.size) return;
+  logServer("stats", {
+    clients: clients.size,
+    games: games.size,
+    memory: memoryDetails()
+  });
+}, SERVER_STATS_LOG_MS).unref?.();
 
 function serveHttp(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
@@ -488,7 +554,9 @@ function createGameRoom() {
   room.id = typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  room.createdAt = Date.now();
   games.set(room.id, room);
+  logServer("roomCreated", { room: roomDetails(room) });
   return room;
 }
 
@@ -619,6 +687,7 @@ function attachWebSocket(socket, req) {
     lastChatVersionSent: -1,
     lastNukeActionAt: 0,
     lastNukeThrottleNoticeAt: 0,
+    lastBacklogLogAt: 0,
     alive: true,
     lastSeen: Date.now()
   };
@@ -632,6 +701,7 @@ function attachWebSocket(socket, req) {
       withGame(previousRoom, () => {
         attachClientToGame(client, previousRoom, slot);
       });
+      logServer("clientReattached", { room: roomDetails(previousRoom), playerId: slot });
     }
   }
 
@@ -653,9 +723,9 @@ function attachWebSocket(socket, req) {
   }
 
   socket.on("data", (chunk) => readFrames(client, chunk));
-  socket.on("close", () => detachClient(client));
-  socket.on("end", () => detachClient(client));
-  socket.on("error", () => detachClient(client));
+  socket.on("close", () => detachClient(client, "close"));
+  socket.on("end", () => detachClient(client, "end"));
+  socket.on("error", () => detachClient(client, "error"));
 }
 
 function readClientToken(req) {
@@ -681,7 +751,7 @@ function disconnectDuplicateTokenClients(token) {
     if (!previousSession && client.playerId && client.gameId) {
       previousSession = { gameId: client.gameId, playerId: client.playerId };
     }
-    detachClient(client);
+    detachClient(client, "duplicate");
     client.socket.destroy();
   }
 
@@ -776,6 +846,11 @@ function maybeDisposeGame(room, now = Date.now()) {
   if (ttl && now - room.emptySince < ttl) return;
   clearInterval(room.timer);
   if (room.stateBroadcastTimer) clearTimeout(room.stateBroadcastTimer);
+  logServer("roomDisposed", {
+    room: roomDetails(room),
+    emptyMs: now - room.emptySince,
+    ttlMs: ttl
+  });
   games.delete(room.id);
 }
 
@@ -785,11 +860,17 @@ function cleanupEmptyGames(now = Date.now()) {
   }
 }
 
-function detachClient(client) {
+function detachClient(client, reason = "unknown") {
   if (!clients.has(client)) return;
 
   const room = clientGame(client);
   clients.delete(client);
+  logServer("clientDetached", {
+    reason,
+    room: roomDetails(room),
+    playerId: client.playerId,
+    remainingClients: room ? clientsForGame(room).length : 0
+  });
 
   if (room) {
     withGame(room, () => {
@@ -902,6 +983,7 @@ function allowClientMessage(client) {
 function send(client, body) {
   if (!client.socket.destroyed) {
     if (body.type === "state" && (client.socket.writableNeedDrain || client.socket.writableLength > MAX_WS_BACKLOG_BYTES)) {
+      logClientBacklog(client);
       client.pendingState = mergePendingState(client.pendingState, body);
       flushPendingStateOnDrain(client);
       return false;
@@ -917,6 +999,18 @@ function send(client, body) {
     return sent;
   }
   return false;
+}
+
+function logClientBacklog(client) {
+  const now = Date.now();
+  if (now - (client.lastBacklogLogAt || 0) < 15_000) return;
+  client.lastBacklogLogAt = now;
+  logServer("stateBacklog", {
+    room: roomDetails(clientGame(client)),
+    playerId: client.playerId,
+    writableLength: client.socket.writableLength,
+    needDrain: Boolean(client.socket.writableNeedDrain)
+  });
 }
 
 function mergePendingState(previous, next) {
@@ -1289,6 +1383,7 @@ function closeCurrentRoom(message) {
   if (!game?.id) return;
   const room = game;
   const roomClients = clientsForCurrentGame();
+  logServer("roomClosed", { room: roomDetails(room), message });
   clearPendingStateBroadcast();
   clearInterval(room.timer);
   room.timer = null;
@@ -1356,7 +1451,7 @@ function handleContinueWithBots(client) {
   game.ended = null;
   if (!game.timer) {
     const room = game;
-    game.timer = setInterval(() => withGame(room, gameLoop), GAME_LOOP_INTERVAL_MS);
+    game.timer = setInterval(() => runGameLoop(room), GAME_LOOP_INTERVAL_MS);
   }
   addSystemEvent(`${game.players[client.playerId].country} продолжает партию против ботов.`, { sound: "diplomacy" });
   recomputePlayerFlags();
@@ -2792,13 +2887,14 @@ function releaseVassal(overlordId, vassalId) {
 }
 
 function declareWar(fromId, toId) {
-  if (isDefeated(fromId) || isDefeated(toId)) return;
-  if (game.players[fromId]?.vassalOf) return;
+  if (isDefeated(fromId) || isDefeated(toId)) return false;
+  if (game.players[fromId]?.vassalOf) return false;
   const targetOverlord = game.players[toId]?.vassalOf;
   if (targetOverlord && targetOverlord !== fromId && !isDefeated(targetOverlord)) {
     toId = targetOverlord;
   }
-  if (isVassalOf(fromId, toId) || isVassalOf(toId, fromId)) return;
+  if (isVassalOf(fromId, toId) || isVassalOf(toId, fromId)) return false;
+  if (relationStatus(fromId, toId) === "war") return false;
   setRelation(fromId, toId, "war");
   game.diplomacyOffers = game.diplomacyOffers.filter((offer) => !samePair(offer.from, offer.to, fromId, toId));
   game.ultimatums = game.ultimatums.filter((item) => !samePair(item.from, item.to, fromId, toId));
@@ -2806,6 +2902,7 @@ function declareWar(fromId, toId) {
   cancelSupportBetween(fromId, toId);
   addSystemEvent(`${game.players[fromId].country} объявляет войну стране ${game.players[toId].country}!`, { sound: "war" });
   botSayPhrase(fromId, "war");
+  return true;
 }
 
 function clearRelation(a, b) {
@@ -3902,10 +3999,14 @@ function createFreshGame() {
     flatCellsSource: null,
     chat: [],
     chatVersion: 0,
+    createdAt: Date.now(),
     startedAt: null,
     ended: null,
     timer: null,
     stateBroadcastTimer: null,
+    lastStateBroadcastAt: 0,
+    lastGameLoopAt: 0,
+    lastSlowLoopLogAt: 0,
     emptySince: 0,
     explosionId: 0,
     reportId: 0,
@@ -3965,6 +4066,8 @@ function startGame() {
   clearPendingStateBroadcast();
   game.status = "running";
   game.startedAt = Date.now();
+  game.lastGameLoopAt = 0;
+  game.lastStateBroadcastAt = 0;
   game.ended = null;
   game.chat = [];
   game.map = generateMap();
@@ -4030,8 +4133,9 @@ function startGame() {
   }
   clearInterval(game.timer);
   const room = game;
-  game.timer = setInterval(() => withGame(room, gameLoop), GAME_LOOP_INTERVAL_MS);
+  game.timer = setInterval(() => runGameLoop(room), GAME_LOOP_INTERVAL_MS);
   recomputePlayerFlags();
+  logServer("gameStarted", { room: roomDetails(game), settings: game.settings });
   broadcast({ type: "start" });
   broadcastState();
 }
@@ -4130,6 +4234,37 @@ function placeStarterFarms(playerId, start) {
     const cell = getCell(start.x + dx, start.y + dy);
     if (cell?.owner === playerId && !cell.building && cell.terrain === "land") {
       cell.building = { type: "farm", owner: playerId, lastIncome: Date.now() };
+    }
+  }
+}
+
+function runGameLoop(room) {
+  if (!room?.id || !games.has(room.id)) return;
+  const now = Date.now();
+  const previousLoopAt = room.lastGameLoopAt || 0;
+  const drift = previousLoopAt ? now - previousLoopAt : GAME_LOOP_INTERVAL_MS;
+  room.lastGameLoopAt = now;
+  const startedAt = Date.now();
+
+  try {
+    withGame(room, gameLoop);
+  } catch (error) {
+    logServer("gameLoopError", {
+      room: roomDetails(room),
+      error: errorDetails(error),
+      memory: memoryDetails()
+    });
+  } finally {
+    const elapsed = Date.now() - startedAt;
+    const shouldWarn = elapsed > SLOW_GAME_LOOP_MS || drift > GAME_LOOP_DRIFT_WARN_MS;
+    if (shouldWarn && Date.now() - (room.lastSlowLoopLogAt || 0) > 30_000) {
+      room.lastSlowLoopLogAt = Date.now();
+      logServer("gameLoopLag", {
+        room: roomDetails(room),
+        elapsedMs: elapsed,
+        driftMs: drift,
+        memory: memoryDetails()
+      });
     }
   }
 }
@@ -6917,14 +7052,34 @@ function lobbyPayloadFor(client = null) {
 function broadcastState() {
   if (!game || game.stateBroadcastTimer) return;
   const room = game;
-  room.stateBroadcastTimer = setTimeout(() => withGame(room, flushStateBroadcast), STATE_BROADCAST_DELAY_MS);
+  room.stateBroadcastTimer = setTimeout(() => runStateBroadcast(room), STATE_BROADCAST_DELAY_MS);
   room.stateBroadcastTimer.unref?.();
+}
+
+function runStateBroadcast(room) {
+  if (!room?.id || !games.has(room.id)) return;
+  try {
+    withGame(room, flushStateBroadcast);
+  } catch (error) {
+    room.stateBroadcastTimer = null;
+    logServer("stateBroadcastError", {
+      room: roomDetails(room),
+      error: errorDetails(error),
+      memory: memoryDetails()
+    });
+  }
 }
 
 function flushStateBroadcast() {
   if (!game) return;
   game.stateBroadcastTimer = null;
+  flushStateSnapshot();
+}
+
+function flushStateSnapshot() {
+  if (!game) return;
   game.stateVersion += 1;
+  game.lastStateBroadcastAt = Date.now();
   const stateSnapshot = serializeState(false);
   const mapSnapshot = hasClientNeedingMap() ? serializeMap() : null;
   const chatSnapshot = hasClientNeedingChat() ? game.chat : null;
@@ -6933,15 +7088,15 @@ function flushStateBroadcast() {
   }
 }
 
-function broadcastStateNow() {
-  clearPendingStateBroadcast();
-  game.stateVersion += 1;
-  const stateSnapshot = serializeState(false);
-  const mapSnapshot = hasClientNeedingMap() ? serializeMap() : null;
-  const chatSnapshot = hasClientNeedingChat() ? game.chat : null;
-  for (const client of clientsForCurrentGame()) {
-    sendState(client, stateSnapshot, mapSnapshot, chatSnapshot);
+function broadcastStateNow(options = {}) {
+  if (!game) return;
+  const now = Date.now();
+  if (!options.force && game.lastStateBroadcastAt && now - game.lastStateBroadcastAt < STATE_BROADCAST_MIN_INTERVAL_MS) {
+    broadcastState();
+    return;
   }
+  clearPendingStateBroadcast();
+  flushStateSnapshot();
 }
 
 function clearPendingStateBroadcast() {
@@ -8197,7 +8352,7 @@ function isAllied(a, b) {
 }
 
 function isDamageableOwner(attackerId, ownerId) {
-  return Boolean(ownerId && ownerId !== attackerId && !isAllied(attackerId, ownerId));
+  return Boolean(ownerId && ownerId !== attackerId && !isVassalOf(attackerId, ownerId) && !isVassalOf(ownerId, attackerId));
 }
 
 function damageablePlayerIds(playerId) {
