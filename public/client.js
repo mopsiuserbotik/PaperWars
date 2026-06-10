@@ -242,6 +242,7 @@ let nukeSmokes = [];
 let impactSmokes = [];
 let shotEffects = [];
 let flightEffects = [];
+let captureEffects = [];
 let toastTimer = null;
 let eventBannerTimer = null;
 let centeredHome = false;
@@ -299,7 +300,6 @@ let mapZoom = 1;
 let lastMapSyncRequestAt = 0;
 let modalSubmitHandler = null;
 let devUnlocked = false;
-let trollCensorTimer = null;
 const activePointers = new Map();
 let pinchStartDistance = 0;
 let pinchStartZoom = 1;
@@ -341,6 +341,7 @@ const EXPLOSION_MS = {
   nuke: 2600
 };
 const SHOT_EFFECT_MS = 520;
+const CAPTURE_EFFECT_MS = 6000;
 let CLIENT_TOKEN = "";
 let sfxEnabled = true;
 
@@ -860,10 +861,12 @@ function handleServerMessage(message) {
   }
 
   if (message.type === "state") {
-    const previousMap = state?.map || null;
-    const previousChat = state?.chat || [];
-    const previousJournal = state?.journal || [];
-    const nextMap = message.state.map || applyMapPatch(previousMap, message.state.mapPatch, state?.mapVersion);
+    const previousState = state;
+    const previousMap = previousState?.map || null;
+    const previousChat = previousState?.chat || [];
+    const previousJournal = previousState?.journal || [];
+    const nextMap = message.state.map || applyMapPatch(previousMap, message.state.mapPatch, previousState?.mapVersion);
+    syncCaptureEffects(previousMap, nextMap, previousState?.players || {}, message.state.players || previousState?.players || {});
     state = {
       ...message.state,
       map: nextMap || previousMap || [],
@@ -941,9 +944,6 @@ function handleServerMessage(message) {
     playSfx(message.name, message);
   }
 
-  if (message.type === "troll") {
-    applyTrollEffect(message.troll || {});
-  }
 
   if (message.type === "chat") {
     if (state) {
@@ -1012,6 +1012,70 @@ function applyMapPatch(previousMap, patch, previousVersion) {
     nextMap[y][x] = cell;
   }
   return nextMap;
+}
+
+function syncCaptureEffects(previousMap, nextMap, previousPlayers = {}, nextPlayers = {}) {
+  if (!Array.isArray(previousMap) || !Array.isArray(nextMap)) return;
+  const now = Date.now();
+  const nextEffects = [];
+
+  for (let y = 0; y < nextMap.length; y += 1) {
+    const previousRow = previousMap[y];
+    const nextRow = nextMap[y];
+    if (!Array.isArray(previousRow) || !Array.isArray(nextRow)) continue;
+
+    for (let x = 0; x < nextRow.length; x += 1) {
+      const previousCell = previousRow[x];
+      const nextCell = nextRow[x];
+      if (!previousCell || !nextCell) continue;
+
+      const fromOwner = previousCell.owner || "";
+      const toOwner = nextCell.owner || "";
+      if (fromOwner === toOwner || (!fromOwner && !toOwner)) continue;
+
+      nextEffects.push({
+        id: `capture:${now}:${x}:${y}:${fromOwner}:${toOwner}`,
+        x,
+        y,
+        fromOwner,
+        toOwner,
+        fromColor: captureColorForOwner(fromOwner, previousPlayers, previousCell),
+        toColor: captureColorForOwner(toOwner, nextPlayers, nextCell),
+        at: now,
+        until: now + CAPTURE_EFFECT_MS
+      });
+    }
+  }
+
+  if (!nextEffects.length) return;
+  const replaced = new Set(nextEffects.map((effect) => `${effect.x}:${effect.y}`));
+  captureEffects = captureEffects
+    .filter((effect) => effect.until > now && !replaced.has(`${effect.x}:${effect.y}`))
+    .concat(nextEffects)
+    .slice(-80);
+  refreshCaptureEffects(CAPTURE_EFFECT_MS);
+}
+
+function captureColorForOwner(ownerId, players = {}, cell = null) {
+  if (ownerId && players[ownerId]?.colorValue) return players[ownerId].colorValue;
+  return terrainCaptureColor(cell?.terrain);
+}
+
+function terrainCaptureColor(terrain = "land") {
+  return {
+    water: "var(--water)",
+    gold: "var(--gold)",
+    iron: "#b7b7b0",
+    uranium: "var(--uranium)"
+  }[terrain] || "var(--button)";
+}
+
+function refreshCaptureEffects(duration = CAPTURE_EFFECT_MS) {
+  renderedMapKey = "";
+  setTimeout(() => {
+    renderedMapKey = "";
+    renderMap();
+  }, duration + 80);
 }
 
 function requestFullMapSync() {
@@ -1460,6 +1524,7 @@ function renderMap() {
   nukeSmokes = nukeSmokes.filter((smoke) => smoke.until > now);
   impactSmokes = impactSmokes.filter((smoke) => smoke.until > now);
   shotEffects = shotEffects.filter((effect) => effect.until > now);
+  captureEffects = captureEffects.filter((effect) => effect.until > now);
   mapBubbles = mapBubbles.filter((bubble) => bubble.until > now);
   els.map.classList.toggle("has-nuke-shock", explosions.some((explosion) => explosion.kind === "nuke"));
   const activeEvent = state.activeEvent?.type || "";
@@ -1474,6 +1539,7 @@ function renderMap() {
 
   const boomByCell = new Set(explosions.map((explosion) => `${explosion.x}:${explosion.y}`));
   const smokeByCell = new Set(nukeSmokes.map((smoke) => `${smoke.x}:${smoke.y}`));
+  const captureByCell = new Map(captureEffects.map((effect) => [`${effect.x}:${effect.y}`, effect]));
   const highlights = getTargetHighlights();
   const fogActive = activeEvent === "fog" && !spectator;
   const visibleFogCells = fogActive ? fogVisibleCells() : null;
@@ -1486,6 +1552,7 @@ function renderMap() {
         visibleFogCells,
         boomByCell,
         smokeByCell,
+        captureByCell,
         highlights
       });
       index += 1;
@@ -1530,7 +1597,7 @@ function ensureMapDom(width, height) {
       units.className = "units";
       button.append(building, construction, units);
       fragment.append(button);
-      mapCellNodes.push({ button, building, construction, units, bubble: null, renderKey: "" });
+      mapCellNodes.push({ button, building, construction, units, capture: null, bubble: null, renderKey: "" });
     }
   }
 
@@ -1548,11 +1615,13 @@ function updateMapCell(entry, cell, context) {
   const visible = !context.visibleFogCells || context.visibleFogCells.has(key);
   const hasBoom = context.boomByCell.has(`${cell.x}:${cell.y}`);
   const hasSmoke = context.smokeByCell.has(`${cell.x}:${cell.y}`);
+  const capture = context.captureByCell.get(`${cell.x}:${cell.y}`);
   const bubble = mapBubbleForCell(cell, context.now);
   const className = [
     "cell",
     `terrain-${cell.terrain}`,
     cell.owner ? "is-owned" : "",
+    capture ? "is-capturing" : "",
     bubble ? "has-bubble" : "",
     cell.building?.type === "bridge" ? "has-bridge" : "",
     cell.construction ? "has-construction" : "",
@@ -1573,8 +1642,9 @@ function updateMapCell(entry, cell, context) {
   const constructionText = visible ? constructionMark(cell) : "";
   const unitsText = visible ? compactUnitsText(cell) : "";
   const title = visible ? cellTooltip(cell) : "Густой туман";
+  const captureKey = capture ? `${capture.id}:${capture.fromColor}:${capture.toColor}:${capture.until}` : "";
   const bubbleKey = bubble ? `${bubble.id}:${bubble.text}` : "";
-  const nextRenderKey = [className, ownerColor, borderColor, edgeKey, buildingText, constructionText, unitsText, title, bubbleKey].join("|");
+  const nextRenderKey = [className, ownerColor, borderColor, edgeKey, buildingText, constructionText, unitsText, title, captureKey, bubbleKey].join("|");
   if (entry.renderKey === nextRenderKey) return;
   entry.renderKey = nextRenderKey;
   button.className = className;
@@ -1591,6 +1661,21 @@ function updateMapCell(entry, cell, context) {
   if (construction) construction.textContent = constructionText;
   units.textContent = unitsText;
   button.title = title;
+
+  if (capture) {
+    if (!entry.capture) {
+      entry.capture = document.createElement("span");
+      entry.capture.className = "capture-stripe";
+      button.append(entry.capture);
+    }
+    entry.capture.style.setProperty("--capture-from-color", capture.fromColor);
+    entry.capture.style.setProperty("--capture-to-color", capture.toColor);
+    entry.capture.style.setProperty("--capture-duration", `${CAPTURE_EFFECT_MS}ms`);
+    entry.capture.style.animationDelay = `-${Math.min(context.now - capture.at, CAPTURE_EFFECT_MS)}ms`;
+  } else if (entry.capture) {
+    entry.capture.remove();
+    entry.capture = null;
+  }
 
   if (bubble) {
     if (!entry.bubble) {
@@ -1618,7 +1703,10 @@ function resetMapDom(clearDom = false) {
   mapLayoutKey = "";
   mapCellNodes = [];
   mapEffectLayer = null;
-  if (clearDom) els.map.replaceChildren();
+  if (clearDom) {
+    captureEffects = [];
+    els.map.replaceChildren();
+  }
 }
 
 function appendMapEffects(layer, now, width = state?.width || 34, height = state?.height || 24) {
@@ -1780,6 +1868,7 @@ function getMapRenderKey() {
   const impactSmokeKey = impactSmokes.map((smoke) => `${smoke.id}:${smoke.until}`).join("|");
   const shotEffectKey = shotEffects.map((effect) => `${effect.id}:${effect.until}`).join("|");
   const flightEffectKey = flightEffects.map((effect) => `${effect.id}:${effect.until}`).join("|");
+  const captureEffectKey = captureEffects.map((effect) => `${effect.id}:${effect.until}`).join("|");
   const bubbleKey = mapBubbles.map((bubble) => `${bubble.id}:${bubble.until}`).join("|");
   const eventKey = `${state.activeEvent?.type || ""}:${state.pendingEvent?.type || ""}`;
   return [
@@ -1793,6 +1882,7 @@ function getMapRenderKey() {
     impactSmokeKey,
     shotEffectKey,
     flightEffectKey,
+    captureEffectKey,
     bubbleKey,
     eventKey
   ].join(";");
@@ -2521,25 +2611,7 @@ function handleModalClick(event) {
     return;
   }
 
-  if (event.target.closest("[data-exit-confirm]")) {
-    closeModal();
-    send({ type: "leaveRoom" }, { priority: true });
-    return;
-  }
 
-  const trollLoan = event.target.closest("[data-troll-loan-choice]");
-  if (trollLoan) {
-    const id = trollLoan.dataset.trollId || "";
-    const choice = trollLoan.dataset.trollLoanChoice || "";
-    closeModal();
-    send({ type: "trollResponse", id, choice }, { priority: true });
-    return;
-  }
-
-  if (event.target.closest("[data-troll-fake-win]")) {
-    showToast("Недостаточно уважения.");
-    return;
-  }
 
   const step = event.target.closest("[data-resource-step]");
   if (step) {
@@ -2589,16 +2661,17 @@ function handleModalClick(event) {
       return;
     }
     devUnlocked = true;
-    openDeveloperResourceMenu();
+    openDeveloperPanel();
     return;
   }
 
-  if (event.target.closest("[data-dev-submit]")) {
+  const resourceAction = event.target.closest("[data-dev-resource-action]");
+  if (resourceAction) {
     const targetId = els.modalLayer.querySelector("[data-dev-country]")?.value;
-    const resources = readModalResourceState();
-    if (!targetId) return;
-    send({ type: "devResources", code: DEV_CODE, action: "setResources", targetId, resources }, { priority: true });
-    closeModal();
+    const action = resourceAction.dataset.devResourceAction || "setResources";
+    const resources = action === "setResources" ? readModalResourceState() : readDevResourceDelta();
+    if (!targetId || !resources) return;
+    send({ type: "devResources", code: DEV_CODE, action, targetId, resources }, { priority: true });
     return;
   }
 
@@ -2611,21 +2684,18 @@ function handleModalClick(event) {
       for (const input of els.modalLayer.querySelectorAll("[data-resource-input]")) {
         input.value = 999;
       }
+    } else if (cheat.dataset.devCheat === "zeroResources") {
+      for (const input of els.modalLayer.querySelectorAll("[data-resource-input]")) {
+        input.value = 0;
+      }
     }
   }
 
-  if (event.target.closest("[data-dev-troll-submit]")) {
-    const targetId = els.modalLayer.querySelector("[data-dev-country]")?.value;
-    const trollType = els.modalLayer.querySelector("[data-dev-troll]")?.value;
-    const seconds = Number(els.modalLayer.querySelector("[data-dev-troll-seconds]")?.value || 8);
-    send({ type: "devResources", code: DEV_CODE, action: "troll", targetId, trollType, seconds }, { priority: true });
-    return;
-  }
 }
 
 function handleModalChange(event) {
   if (event.target.matches("[data-dev-country]")) {
-    openDeveloperResourceMenu(event.target.value);
+    openDeveloperPanel(event.target.value);
   }
 }
 
@@ -2637,6 +2707,19 @@ function readModalResources() {
   }
   if (!Object.keys(resources).length) {
     showToast("Укажи хотя бы один ресурс.");
+    return null;
+  }
+  return resources;
+}
+
+function readDevResourceDelta() {
+  const resources = {};
+  for (const input of els.modalLayer.querySelectorAll("[data-dev-resource-delta]")) {
+    const amount = Math.max(0, Math.floor(Number(input.value || 0)));
+    if (amount > 0) resources[input.dataset.devResourceDelta] = amount;
+  }
+  if (!Object.keys(resources).length) {
+    showToast("Укажи delta хотя бы для одного ресурса.");
     return null;
   }
   return resources;
@@ -2667,110 +2750,6 @@ function upsertNukeSmoke(nextSmoke) {
   nukeSmokes.push(nextSmoke);
 }
 
-function applyTrollEffect(troll = {}) {
-  const type = troll.type || "";
-  if (type === "adLoan") {
-    openTrollLoanModal(troll);
-    return;
-  }
-  if (type === "fakeEvent") {
-    const text = troll.text || "ООН признала вашу страну слишком слабой.";
-    addLocalSystemMessage(text);
-    showToast(text);
-    return;
-  }
-  if (type === "censorMap") {
-    const seconds = clamp(Math.round(Number(troll.seconds) || 8), 1, 60);
-    els.map?.classList.add("is-censored");
-    clearTimeout(trollCensorTimer);
-    trollCensorTimer = setTimeout(() => {
-      els.map?.classList.remove("is-censored");
-      trollCensorTimer = null;
-    }, seconds * 1000);
-    showToast(`Карта засекречена на ${seconds} сек.`);
-    return;
-  }
-  if (type === "fakeFine") {
-    openTrollNoticeModal("Штраф", troll.text || "Штраф -999 золота", "Оплатить морально");
-    showToast("-999 золота");
-    return;
-  }
-  if (type === "fakeWin") {
-    openTrollFakeWinModal();
-  }
-}
-
-function openTrollLoanModal(troll) {
-  const id = troll.id || "";
-  els.modalLayer.innerHTML = `
-    <div class="modal-box modal-box--small troll-modal" role="dialog" aria-modal="true">
-      <div class="modal-head">
-        <strong>${escapeHtml(troll.title || "RAHMAT BANK")}</strong>
-        <button data-modal-close type="button">×</button>
-      </div>
-      <p class="modal-note">${escapeHtml(troll.text || "Вашей стране срочно нужен кредит от RAHMAT BANK.")}</p>
-      <div class="modal-actions">
-        <button class="primary" data-troll-loan-choice="take" data-troll-id="${escapeHtml(id)}" type="button">Взять 999%</button>
-        <button class="secondary" data-troll-loan-choice="suffer" data-troll-id="${escapeHtml(id)}" type="button">Страдать</button>
-      </div>
-    </div>
-  `;
-  els.modalLayer.classList.remove("hidden");
-}
-
-function openTrollNoticeModal(title, text, buttonText = "Закрыть") {
-  els.modalLayer.innerHTML = `
-    <div class="modal-box modal-box--small troll-modal" role="dialog" aria-modal="true">
-      <div class="modal-head">
-        <strong>${escapeHtml(title)}</strong>
-        <button data-modal-close type="button">×</button>
-      </div>
-      <p class="modal-note">${escapeHtml(text)}</p>
-      <button class="primary modal-submit" data-modal-close type="button">${escapeHtml(buttonText)}</button>
-    </div>
-  `;
-  els.modalLayer.classList.remove("hidden");
-}
-
-function openTrollFakeWinModal() {
-  els.modalLayer.innerHTML = `
-    <div class="modal-box modal-box--small troll-modal" role="dialog" aria-modal="true">
-      <div class="modal-head">
-        <strong>Почти победа</strong>
-        <button data-modal-close type="button">×</button>
-      </div>
-      <p class="modal-note">Найдена секретная кнопка победы.</p>
-      <button class="primary modal-submit" data-troll-fake-win type="button">Победить</button>
-    </div>
-  `;
-  els.modalLayer.classList.remove("hidden");
-}
-
-function addLocalSystemMessage(text) {
-  if (!state) return;
-  const journalEntry = {
-    id: `local-troll-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    type: "battle",
-    text,
-    at: Date.now()
-  };
-  state.journal = [...(state.journal || []), journalEntry].slice(-80);
-  renderJournal();
-  renderPanels();
-  return;
-  const entry = {
-    id: `local-troll-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    type: "system",
-    name: "Событие",
-    color: "#202020",
-    text,
-    at: Date.now()
-  };
-  state.chat = [...(state.chat || []), entry].slice(-40);
-  renderChat();
-  renderPanels();
-}
-
 function openExitModal() {
   els.modalLayer.innerHTML = `
     <div class="modal-box modal-box--small" role="dialog" aria-modal="true">
@@ -2790,7 +2769,7 @@ function openExitModal() {
 
 function openDeveloperMenu() {
   if (devUnlocked) {
-    openDeveloperResourceMenu();
+    openDeveloperPanel();
     return;
   }
   els.modalLayer.innerHTML = `
@@ -2809,71 +2788,131 @@ function openDeveloperMenu() {
   els.modalLayer.classList.remove("hidden");
 }
 
-function openDeveloperResourceMenu(selectedId = null) {
+function openDeveloperPanel(selectedId = null) {
   if (!state?.players) {
     showToast("Матч еще не загружен.");
     return;
   }
   const players = Object.values(state.players).filter(Boolean);
   const activeId = selectedId && state.players[selectedId] ? selectedId : (players[0]?.id || "");
-  const active = state.players[activeId];
+  const active = state.players[activeId] || {};
+  const dev = state.dev || {};
+  const timedEvent = state.activeEvent || state.pendingEvent;
+  const eventStatus = timedEvent
+    ? `${timedEvent.label || timedEvent.type} ${state.pendingEvent ? `через ${timedEvent.startsIn || 0}с` : `${timedEvent.endsIn || 0}с`}`
+    : "нет активного события";
   const options = players
     .map((player) => `<option value="${escapeHtml(player.id)}" ${player.id === activeId ? "selected" : ""}>${escapeHtml(player.country || player.id)}${player.defeated ? " (выбыла)" : ""}</option>`)
     .join("");
+
   els.modalLayer.innerHTML = `
-    <div class="modal-box" role="dialog" aria-modal="true">
+    <div class="modal-box modal-box--dev" role="dialog" aria-modal="true">
       <div class="modal-head">
-        <strong>Ресурсы стран</strong>
+        <strong>Dev режим</strong>
         <button data-modal-close type="button">×</button>
       </div>
-      <label class="field">
-        <span>Страна</span>
-        <select data-dev-country>${options}</select>
-      </label>
-      <div class="resource-editor">
-        ${resourceRowsHtml(active?.resources || {})}
+
+      <div class="dev-status-grid">
+        <div><span>Код</span><strong>активен</strong></div>
+        <div><span>События</span><strong>${dev.randomEventsEnabled ? "включены" : "выключены"}</strong></div>
+        <div><span>Сейчас</span><strong>${escapeHtml(eventStatus)}</strong></div>
+        <div><span>Cooldown</span><strong>${dev.noCooldowns ? "отключены" : "обычные"}</strong></div>
       </div>
-      <button class="primary modal-submit" data-dev-submit type="button">Применить ресурсы</button>
-      <div class="dev-event">
+
+      <section class="dev-section">
+        <div class="dev-section__head">
+          <strong>Страна</strong>
+          <span>${active.isBot ? "бот" : "игрок"}${active.defeated ? " · выбыла" : ""}</span>
+        </div>
         <label class="field">
-          <span>Событие сейчас</span>
-          <select data-dev-event>
-            ${Object.entries(RANDOM_EVENT_DEFS).map(([id, label]) => `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`).join("")}
-          </select>
+          <span>Кого правим</span>
+          <select data-dev-country>${options}</select>
         </label>
-        <button data-dev-cheat="triggerEvent" type="button">Запустить событие</button>
-        <button data-dev-cheat="clearEvent" type="button">Снять событие</button>
-      </div>
-      <div class="dev-event">
-        <label class="field">
-          <span>Троллинг</span>
-          <select data-dev-troll>
-            <option value="adLoan">Реклама RAHMAT BANK</option>
-            <option value="fakeEvent">Фейковое событие ООН</option>
-            <option value="censorMap">Цензура карты</option>
-            <option value="fakeFine">Фейковый штраф -999</option>
-            <option value="fakeWin">Фейковая кнопка победы</option>
-          </select>
-        </label>
-        <label class="field">
-          <span>Секунд для цензуры</span>
-          <input data-dev-troll-seconds type="number" min="1" max="60" step="1" value="8">
-        </label>
-        <button data-dev-troll-submit type="button">Отправить троллинг</button>
-      </div>
-      <div class="dev-cheats">
-        <button data-dev-cheat="clearCooldowns" type="button">Убрать перезарядки</button>
-        <button data-dev-cheat="restoreCooldowns" type="button">Вернуть перезарядки</button>
-        <button data-dev-cheat="maxResources" type="button">999 выбранной</button>
-        <button data-dev-cheat="maxAllResources" type="button">999 всем</button>
-        <button data-dev-cheat="toggleAlwaysMisfire" type="button">${active?.devAlwaysMisfire ? "Выключить осечки" : "Всегда осечки"}</button>
-        <button data-dev-cheat="clearAlwaysMisfire" type="button">Снять осечки</button>
-        <button data-dev-cheat="forceFactoryStrikes" type="button">Забастовки на заводах</button>
-        <button data-dev-cheat="peaceAll" type="button">Нейтралитет всем</button>
-      </div>
+        <div class="dev-country-card">
+          <strong style="color:${escapeHtml(active.colorValue || "var(--ink)")};">${escapeHtml(active.country || active.id || "Страна")}</strong>
+          <span>${resourcesLineHtml(active.resources || {})}</span>
+          <span>nuke ${fmt(active.cooldowns?.nuke || 0)}с · saboteur ${fmt(active.cooldowns?.saboteur || 0)}с · power ${fmt(active.stats?.power || 0)}</span>
+        </div>
+      </section>
+
+      <section class="dev-section">
+        <div class="dev-section__head">
+          <strong>Ресурсы</strong>
+          <span>exact и delta</span>
+        </div>
+        <div class="dev-resource-head"><span>ресурс</span><span>exact</span><span>delta</span></div>
+        <div class="dev-resource-editor">
+          ${devResourceRowsHtml(active.resources || {})}
+        </div>
+        <div class="dev-actions dev-actions--three">
+          <button class="primary" data-dev-resource-action="addResources" type="button">Добавить delta</button>
+          <button data-dev-resource-action="subtractResources" type="button">Снять delta</button>
+          <button data-dev-resource-action="setResources" type="button">Выставить exact</button>
+        </div>
+        <div class="dev-actions">
+          <button data-dev-cheat="maxResources" type="button">999 выбранной</button>
+          <button data-dev-cheat="zeroResources" type="button">0 выбранной</button>
+          <button data-dev-cheat="maxAllResources" type="button">999 всем</button>
+        </div>
+      </section>
+
+      <section class="dev-section">
+        <div class="dev-section__head">
+          <strong>События</strong>
+          <span>${dev.randomEventsEnabled ? "авто включены" : "авто выключены"}</span>
+        </div>
+        <div class="dev-event">
+          <label class="field">
+            <span>Тип события</span>
+            <select data-dev-event>
+              ${Object.entries(RANDOM_EVENT_DEFS).map(([id, label]) => `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`).join("")}
+            </select>
+          </label>
+          <button data-dev-cheat="triggerEvent" type="button">Запустить</button>
+          <button data-dev-cheat="clearEvent" type="button">Снять текущее</button>
+          <button data-dev-cheat="enableEvents" type="button">Авто ON</button>
+          <button data-dev-cheat="disableEvents" type="button">Авто OFF</button>
+        </div>
+      </section>
+
+      <section class="dev-section">
+        <div class="dev-section__head">
+          <strong>Перезарядки</strong>
+          <span>${dev.hasCooldownSnapshot ? "есть общий snapshot" : "snapshot пуст"}</span>
+        </div>
+        <div class="dev-actions">
+          <button data-dev-cheat="clearCooldowns" type="button">Убрать всем</button>
+          <button data-dev-cheat="restoreCooldowns" type="button">Вернуть всем</button>
+          <button data-dev-cheat="clearTargetCooldowns" type="button">Убрать стране</button>
+          <button data-dev-cheat="restoreTargetCooldowns" type="button">Вернуть стране</button>
+        </div>
+      </section>
+
+      <section class="dev-section">
+        <div class="dev-section__head">
+          <strong>Матч</strong>
+          <span>служебные действия</span>
+        </div>
+        <div class="dev-actions">
+          <button data-dev-cheat="toggleAlwaysMisfire" type="button">${active.devAlwaysMisfire ? "Выключить осечки" : "Всегда осечки"}</button>
+          <button data-dev-cheat="clearAlwaysMisfire" type="button">Снять осечки</button>
+          <button data-dev-cheat="forceFactoryStrikes" type="button">Забастовки</button>
+          <button data-dev-cheat="peaceAll" type="button">Нейтралитет всем</button>
+        </div>
+      </section>
     </div>
   `;
   els.modalLayer.classList.remove("hidden");
+}
+
+function devResourceRowsHtml(values = {}) {
+  return RESOURCE_DEFS.map((resource) => `
+    <label class="dev-resource-row">
+      <span>${resource.icon} ${resource.label}</span>
+      <input data-resource-input="${resource.key}" inputmode="numeric" min="0" type="number" value="${Math.max(0, Math.floor(values[resource.key] || 0))}" title="Exact">
+      <input data-dev-resource-delta="${resource.key}" inputmode="numeric" min="0" type="number" value="0" title="Delta">
+    </label>
+  `).join("");
 }
 
 function handleCommand(command, kind, data = {}) {
@@ -3685,7 +3724,7 @@ function applyTheme(theme) {
     els.lobbyThemeButton.title = normalized === "dark" ? "Светлая тема" : "Темная тема";
   }
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = normalized === "dark" ? "#161719" : "#f7f3ea";
+  if (meta) meta.content = normalized === "dark" ? "#061008" : "#f5f5f2";
   try {
     localStorage.setItem("paperWarsTheme", normalized);
   } catch (error) {}
@@ -3717,7 +3756,7 @@ function toggleSound() {
 function applySoundPreference() {
   for (const button of [els.soundButton, els.lobbySoundButton]) {
     if (!button) continue;
-    button.innerHTML = sfxEnabled ? "&#128266;" : "&#128263;";
+    button.textContent = sfxEnabled ? "\u266a" : "\u00d7";
     button.title = sfxEnabled ? "Sound on" : "Sound off";
     button.setAttribute("aria-pressed", String(sfxEnabled));
   }
@@ -3898,7 +3937,10 @@ function resolveSfxName(name, detail = {}) {
     }[detail.weapon] || "";
   }
   return {
+    alert: "war",
     demolish: "d_house",
+    diplomacy: "soyuz",
+    hire: "money",
     misfire: "osechka",
     nuke: "yaderka"
   }[name] || name;

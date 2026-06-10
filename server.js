@@ -21,7 +21,6 @@ const EVENT_SFX_ALIASES = {
   misfire: "osechka",
   nuke: "yaderka"
 };
-const TROLL_CENSOR_MAX_SECONDS = 60;
 const BOT_PROFILES = {
   farmers:   { country: "Фермеры",   color: "farmers",   colorValue: "#19c9c2", personality: "passive" },
   anarchists:{ country: "Анархисты", color: "anarchists",colorValue: "#2f3437", personality: "aggressive" },
@@ -990,10 +989,6 @@ function emitFlightCancel(id) {
   broadcast({ type: "flightCancel", id });
 }
 
-function emitReport(x, y, text, kind = "info") {
-  return;
-}
-
 function sendError(client, message) {
   if (!client) return;
   send(client, { type: "error", message });
@@ -1048,11 +1043,6 @@ function handleGameMessage(client, message) {
 
   if (message.type === "continueBots") {
     handleContinueWithBots(client);
-    return;
-  }
-
-  if (message.type === "trollResponse") {
-    handleTrollResponse(client, message);
     return;
   }
 
@@ -1241,16 +1231,6 @@ function addChatEntry(entry, options = {}) {
   }
 }
 
-function addSystemEventLegacy(text, options = {}) {
-  addChatEntry({
-    type: "system",
-    name: "Событие",
-    color: "#202020",
-    text,
-    sound: options.sound
-  }, options);
-}
-
 function addJournalEntry(text, options = {}) {
   const fullEntry = {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -1368,36 +1348,6 @@ function handleContinueWithBots(client) {
   broadcastStateNow();
 }
 
-function handleTrollResponse(client, message) {
-  if (!client.playerId || client.spectator) return;
-  const promptId = cleanText(message.id, 80);
-  const choice = cleanText(message.choice, 20);
-  const prompt = game.trollPrompts?.[promptId];
-  if (!prompt || prompt.targetId !== client.playerId || prompt.type !== "adLoan") {
-    sendError(client, "Реклама уже неактуальна.");
-    return;
-  }
-  delete game.trollPrompts[promptId];
-  if (prompt.expiresAt && Date.now() > prompt.expiresAt) {
-    sendError(client, "Реклама уже закрылась.");
-    return;
-  }
-
-  const player = game.players[client.playerId];
-  if (!player) return;
-  if (choice === "take") {
-    addResource(player, "gold", 1);
-    sendInfo(client, "RAHMAT BANK одобрил кредит: +1 золото.");
-  } else if (choice === "suffer") {
-    player.resources.gold = Math.max(0, round1((player.resources.gold || 0) - 1));
-    sendInfo(client, "Вы выбрали страдать: -1 золото.");
-  } else {
-    sendError(client, "Выбери действие.");
-    return;
-  }
-  broadcastStateNow();
-}
-
 function defaultLobbySettings() {
   return {
     maxHumans: 2,
@@ -1488,7 +1438,6 @@ function handleBuild(client, message) {
     label: definition.label
   });
   touchMap();
-  emitReport(cell.x, cell.y, `${definition.label} строится`, "build");
   broadcastState();
 }
 
@@ -1902,19 +1851,6 @@ function handleDiplomacy(client, message) {
   }
 }
 
-function emitReportForPlayer(playerId, text, kind = "info") {
-  const hq = findHqCell(playerId);
-  if (hq) {
-    emitReport(hq.x, hq.y, text, kind);
-    return;
-  }
-  let fallback = null;
-  forEachCell((cell) => {
-    if (!fallback && cell.owner === playerId) fallback = cell;
-  });
-  if (fallback) emitReport(fallback.x, fallback.y, text, kind);
-}
-
 function handleResources(client, message) {
   const action = cleanText(message.action, 30);
   const player = game.players[client.playerId];
@@ -2157,8 +2093,12 @@ function handleDevResources(client, message) {
   const target = game.players[targetId];
 
   if (action === "clearCooldowns") {
+    if (!game.devCooldownSnapshot) {
+      game.devCooldownSnapshot = snapshotCooldowns();
+    }
     game.devNoCooldowns = true;
     clearAllCooldowns();
+    touchMap();
     sendInfo(client, "Перезарядки отключены.");
     broadcastStateNow();
     return;
@@ -2166,6 +2106,11 @@ function handleDevResources(client, message) {
 
   if (action === "restoreCooldowns") {
     game.devNoCooldowns = false;
+    if (game.devCooldownSnapshot) {
+      restoreCooldownSnapshot(game.devCooldownSnapshot);
+      game.devCooldownSnapshot = null;
+    }
+    touchMap();
     sendInfo(client, "Перезарядки снова включены.");
     broadcastStateNow();
     return;
@@ -2178,6 +2123,26 @@ function handleDevResources(client, message) {
     game.resourceRequests = [];
     game.supportDeals = {};
     sendInfo(client, "Все отношения сброшены в нейтралитет.");
+    broadcastStateNow();
+    return;
+  }
+
+  if (action === "enableEvents") {
+    game.settings = sanitizeLobbySettings({ ...game.settings, randomEvents: true });
+    if (!game.activeEvent && !game.pendingEvent) {
+      game.nextRandomEventAt = Date.now() + RANDOM_EVENT_INTERVAL_MS;
+    }
+    sendInfo(client, "Random events enabled.");
+    broadcastStateNow();
+    return;
+  }
+
+  if (action === "disableEvents") {
+    game.settings = sanitizeLobbySettings({ ...game.settings, randomEvents: false });
+    game.activeEvent = null;
+    game.pendingEvent = null;
+    game.nextRandomEventAt = 0;
+    sendInfo(client, "Random events disabled.");
     broadcastStateNow();
     return;
   }
@@ -2196,7 +2161,7 @@ function handleDevResources(client, message) {
   if (action === "clearEvent") {
     game.activeEvent = null;
     game.pendingEvent = null;
-    game.nextRandomEventAt = Date.now() + RANDOM_EVENT_INTERVAL_MS;
+    game.nextRandomEventAt = game.settings?.randomEvents === false ? 0 : Date.now() + RANDOM_EVENT_INTERVAL_MS;
     sendInfo(client, "Случайное событие отключено.");
     broadcastStateNow();
     return;
@@ -2245,8 +2210,29 @@ function handleDevResources(client, message) {
     return;
   }
 
-  if (action === "troll") {
-    sendDevTroll(client, targetId, message);
+  if (action === "clearTargetCooldowns") {
+    game.devPlayerCooldownSnapshots = game.devPlayerCooldownSnapshots || {};
+    if (!game.devPlayerCooldownSnapshots[targetId]) {
+      game.devPlayerCooldownSnapshots[targetId] = snapshotCooldowns(targetId);
+    }
+    clearCooldownsForPlayer(targetId);
+    touchMap();
+    sendInfo(client, `${target.country}: cooldowns cleared.`);
+    broadcastStateNow();
+    return;
+  }
+
+  if (action === "restoreTargetCooldowns") {
+    const snapshot = game.devPlayerCooldownSnapshots?.[targetId];
+    if (snapshot) {
+      restoreCooldownSnapshot(snapshot, targetId);
+      delete game.devPlayerCooldownSnapshots[targetId];
+      touchMap();
+      sendInfo(client, `${target.country}: cooldowns restored.`);
+    } else {
+      sendInfo(client, `${target.country}: no cooldown snapshot.`);
+    }
+    broadcastStateNow();
     return;
   }
 
@@ -2257,76 +2243,29 @@ function handleDevResources(client, message) {
     return;
   }
 
+  if (action === "zeroResources") {
+    setResourcesExact(target, Object.fromEntries(RESOURCE_KEYS.map((key) => [key, 0])));
+    sendInfo(client, `${target.country}: resources zeroed.`);
+    broadcastStateNow();
+    return;
+  }
+
+  if (action === "addResources" || action === "subtractResources") {
+    const resourceDelta = sanitizeResourceBundle(message.resources);
+    if (resourceBundleEmpty(resourceDelta)) {
+      sendError(client, "Set at least one resource amount.");
+      return;
+    }
+    addDevResources(target, resourceDelta, action === "subtractResources" ? -1 : 1);
+    sendInfo(client, `${target.country}: resources updated.`);
+    broadcastStateNow();
+    return;
+  }
+
   const resources = sanitizeResourceState(message.resources);
   setResourcesExact(target, resources);
   sendInfo(client, `${target.country}: ресурсы обновлены.`);
   broadcastStateNow();
-}
-
-function sendDevTroll(client, targetId, message) {
-  const target = game.players[targetId];
-  const targetClient = playerClient(targetId);
-  if (!target || !PLAYER_IDS.includes(targetId)) {
-    sendError(client, "Выбери страну на карте.");
-    return;
-  }
-  if (!targetClient) {
-    sendError(client, "У этой страны сейчас нет подключенного игрока.");
-    return;
-  }
-
-  const trollType = cleanText(message.trollType, 30);
-  const promptId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const seconds = clamp(Math.round(Number(message.seconds) || 8), 1, TROLL_CENSOR_MAX_SECONDS);
-  let troll = null;
-
-  if (trollType === "adLoan") {
-    game.trollPrompts[promptId] = {
-      id: promptId,
-      type: "adLoan",
-      targetId,
-      expiresAt: Date.now() + 60_000
-    };
-    troll = {
-      id: promptId,
-      type: "adLoan",
-      title: "RAHMAT BANK",
-      text: "Вашей стране срочно нужен кредит от RAHMAT BANK.",
-      buttons: ["Взять 999%", "Страдать"]
-    };
-  } else if (trollType === "fakeEvent") {
-    troll = {
-      id: promptId,
-      type: "fakeEvent",
-      text: "ООН признала вашу страну слишком слабой."
-    };
-  } else if (trollType === "censorMap") {
-    troll = {
-      id: promptId,
-      type: "censorMap",
-      seconds
-    };
-  } else if (trollType === "fakeFine") {
-    troll = {
-      id: promptId,
-      type: "fakeFine",
-      text: "Штраф -999 золота"
-    };
-  } else if (trollType === "fakeWin") {
-    troll = {
-      id: promptId,
-      type: "fakeWin",
-      text: "Победить"
-    };
-  }
-
-  if (!troll) {
-    sendError(client, "Выбери троллинг.");
-    return;
-  }
-
-  send(targetClient, { type: "troll", troll });
-  sendInfo(client, `${target.country || targetId}: троллинг отправлен.`);
 }
 
 function forceFactoryStrikes(playerId) {
@@ -2547,6 +2486,87 @@ function setResourcesExact(player, resources) {
   }
 }
 
+function addDevResources(player, resources, direction = 1) {
+  const sign = direction < 0 ? -1 : 1;
+  for (const key of RESOURCE_KEYS) {
+    const value = Math.max(0, Math.floor(Number(resources[key] || 0)));
+    if (!value) continue;
+    const max = key === "ammo" ? Math.max(9999, ammoCapacity(player.id)) : 9999;
+    player.resources[key] = clamp(Math.floor(Number(player.resources[key] || 0)) + value * sign, 0, max);
+  }
+}
+
+function snapshotCooldowns(targetId = "") {
+  const ids = targetId && PLAYER_IDS.includes(targetId) ? [targetId] : PLAYER_IDS;
+  const snapshot = {
+    targetId: targetId || "",
+    players: {},
+    cells: []
+  };
+
+  for (const id of ids) {
+    if (game.players[id]) {
+      snapshot.players[id] = { ...(game.players[id].cooldowns || {}) };
+    }
+  }
+
+  forEachCell((cell) => {
+    const entry = { x: cell.x, y: cell.y, cooldowns: {} };
+    let changed = false;
+    for (const id of ids) {
+      if (cell.cooldowns?.[id]) {
+        entry.cooldowns[id] = { ...cell.cooldowns[id] };
+        changed = true;
+      }
+    }
+    if (cell.building?.type === "nuclearPlant" && ids.includes(cell.building.owner)) {
+      entry.nukeCooldown = cell.building.nukeCooldown || 0;
+      changed = true;
+    }
+    if (changed) snapshot.cells.push(entry);
+  });
+
+  return snapshot;
+}
+
+function restoreCooldownSnapshot(snapshot, targetId = "") {
+  if (!snapshot) return;
+  const ids = targetId && PLAYER_IDS.includes(targetId)
+    ? [targetId]
+    : Object.keys(snapshot.players || {}).filter((id) => PLAYER_IDS.includes(id));
+
+  for (const id of ids) {
+    if (game.players[id]) {
+      game.players[id].cooldowns = {
+        nuke: 0,
+        saboteur: 0,
+        ...(snapshot.players?.[id] || {})
+      };
+    }
+  }
+
+  for (const entry of snapshot.cells || []) {
+    const cell = game.map?.[entry.y]?.[entry.x];
+    if (!cell) continue;
+    cell.cooldowns = cell.cooldowns || {};
+    for (const id of ids) {
+      cell.cooldowns[id] = {
+        ...emptyWeaponCooldowns(),
+        ...(entry.cooldowns?.[id] || {})
+      };
+    }
+    if (cell.building?.type === "nuclearPlant" && ids.includes(cell.building.owner) && Number.isFinite(Number(entry.nukeCooldown))) {
+      cell.building.nukeCooldown = Number(entry.nukeCooldown) || 0;
+    }
+  }
+
+  for (const id of ids) {
+    if (game.players[id]) {
+      game.players[id].cooldowns.nuke = nextNukeCooldownUntil(id);
+    }
+  }
+}
+
 function clearAllCooldowns() {
   for (const player of Object.values(game.players)) {
     if (player) player.cooldowns = { nuke: 0, saboteur: 0 };
@@ -2558,6 +2578,20 @@ function clearAllCooldowns() {
     }
   });
 }
+
+function clearCooldownsForPlayer(playerId) {
+  const player = game.players[playerId];
+  if (!player) return;
+  player.cooldowns = { nuke: 0, saboteur: 0 };
+  forEachCell((cell) => {
+    cell.cooldowns = cell.cooldowns || {};
+    cell.cooldowns[playerId] = emptyWeaponCooldowns();
+    if (cell.building?.type === "nuclearPlant" && cell.building.owner === playerId) {
+      cell.building.nukeCooldown = 0;
+    }
+  });
+}
+
 
 function activateBotSupport(botId, beneficiaryId, resources) {
   if (!game.players[botId]?.isBot || !game.players[beneficiaryId] || isDefeated(botId) || isDefeated(beneficiaryId)) return;
@@ -2793,7 +2827,6 @@ function releaseVassal(overlordId, vassalId) {
     if (id !== vassalId) clearRelation(vassalId, id);
   }
   addSystemEvent(`${overlord.country} освобождает вассала ${vassal.country}.`, { sound: "diplomacy" });
-  emitReportForPlayer(vassalId, "Вассал освобожден", "diplomacy");
   recomputePlayerFlags();
   return true;
 }
@@ -3925,7 +3958,6 @@ function createFreshGame() {
     supportDeals: {},
     diplomacyCooldowns: {},
     resourceRequestCooldowns: {},
-    trollPrompts: {},
     lobbyCreated: false,
     lobbyHostId: null,
     lobbyCode: "",
@@ -3953,6 +3985,8 @@ function createFreshGame() {
     mapVersion: 0,
     flightId: 0,
     devNoCooldowns: false,
+    devCooldownSnapshot: null,
+    devPlayerCooldownSnapshots: {},
     botCursor: 0,
     botTargetMemory: {},
     continuedWithBots: false,
@@ -5096,9 +5130,6 @@ function updateConstructions(now = Date.now()) {
     cell.construction = null;
     changed = true;
     mapChanged = true;
-    if (!completed) {
-      emitReport(cell.x, cell.y, "Стройка отменена", "loss");
-    }
   });
 
   return { changed, mapChanged };
@@ -5227,7 +5258,6 @@ function completeConstruction(cell, construction) {
       player.hqLost = false;
       addSystemEvent(`${player.country} восстанавливает штаб.`);
     }
-    emitReport(cell.x, cell.y, `${construction.label || BUILDINGS[construction.kind]?.label || "Постройка"} построен`, "build");
     return true;
   }
 
@@ -5434,8 +5464,6 @@ function buildBotBuilding(playerId, kind, cell) {
     label: definition.label
   });
   touchMap();
-  emitReport(cell.x, cell.y, `${definition.label} строится`, "build");
-
   // §8 Враг построил завод — ботам с ракетой рядом сигнал для атаки (планируется в следующем тике)
   if (kind === "factory") {
     for (const botId of activeBotIds()) {
@@ -7285,6 +7313,12 @@ function serializeState(includeMap = true) {
     resourceRequests: game.resourceRequests,
     activeEvent: serializeTimedEvent(game.activeEvent, now),
     pendingEvent: serializeTimedEvent(game.pendingEvent, now),
+    dev: {
+      noCooldowns: Boolean(game.devNoCooldowns),
+      randomEventsEnabled: game.settings?.randomEvents !== false,
+      hasCooldownSnapshot: Boolean(game.devCooldownSnapshot),
+      playerCooldownSnapshots: Object.fromEntries(PLAYER_IDS.map((id) => [id, Boolean(game.devPlayerCooldownSnapshots?.[id])]))
+    },
     chatVersion: game.chatVersion,
     journalVersion: game.journalVersion,
     ended: game.ended,
@@ -7586,7 +7620,6 @@ function captureCell(playerId, cell) {
   const capturedBuildingOwner = capturedBuilding?.owner || previousOwner;
   cell.owner = playerId;
   if (previousOwner !== playerId) {
-    emitReport(cell.x, cell.y, previousOwner ? "Территория захвачена" : "Нейтральная клетка занята", "capture");
     if (previousOwner) emitSfx("attack", cell.x, cell.y, { playerId });
   }
   for (const enemyId of hostilePlayerIds(playerId)) {
@@ -7651,7 +7684,6 @@ function destroyBuilding(cell, attackerId = null) {
   cell.building = null;
   if (building.type === "ammoDepot" && ownerId) clampAmmoToCapacity(ownerId);
   emitSfx("d_house", cell.x, cell.y, { playerId: attackerId || ownerId || null });
-  emitReport(cell.x, cell.y, building.type === "hq" ? "Штаб потерян" : "Постройка уничтожена", "loss");
 }
 
 function airDefenseSabotaged(cell, playerId, now = Date.now()) {
