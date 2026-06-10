@@ -1302,19 +1302,21 @@ h1 {
 .map-flight--rocket::after {
   content: "";
   position: absolute;
-  left: 50%;
+  left: auto;
+  right: 50%;
   top: 50%;
   z-index: 1;
-  width: clamp(10px, 1.4vw, 18px);
-  height: clamp(30px, 4.8vw, 66px);
+  width: clamp(32px, 5vw, 72px);
+  height: clamp(10px, 1.4vw, 18px);
   border-radius: 999px;
   background:
-    radial-gradient(ellipse at 50% 12%, rgba(255, 240, 180, 0.7), transparent 34%),
-    radial-gradient(ellipse at 50% 56%, rgba(92, 94, 92, 0.38), transparent 72%);
+    radial-gradient(ellipse at 96% 50%, rgba(255, 240, 180, 0.78), transparent 32%),
+    radial-gradient(ellipse at 56% 50%, rgba(92, 94, 92, 0.38), transparent 74%),
+    linear-gradient(90deg, transparent 0%, rgba(95, 99, 96, 0.16) 35%, rgba(255, 210, 112, 0.5) 100%);
   filter: blur(2px);
   opacity: 0.72;
-  transform: translate(-50%, -2%) rotate(var(--flight-angle, 90deg)) translateY(36%);
-  transform-origin: 50% 0;
+  transform: translateY(-50%) rotate(var(--flight-path-angle, 0deg));
+  transform-origin: 100% 50%;
 }
 
 .map-flight--nuke {

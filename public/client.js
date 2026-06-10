@@ -1573,6 +1573,7 @@ function setFlightPath(node, effect, width, height, now) {
   node.style.setProperty("--from-top", `${fromTop}%`);
   node.style.setProperty("--to-left", `${toLeft}%`);
   node.style.setProperty("--to-top", `${toTop}%`);
+  node.style.setProperty("--flight-path-angle", `${angle}deg`);
   node.style.setProperty("--flight-angle", `${visualAngle}deg`);
   node.style.setProperty("--effect-duration", `${duration}ms`);
   node.style.animationDelay = `-${Math.min(age, duration)}ms`;
