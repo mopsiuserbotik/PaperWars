@@ -1,7 +1,7 @@
 const http = require("http");
 const path = require("path");
 const crypto = require("crypto");
-const { createStaticHandler } = require("./server/static");
+const { createStaticHandler, getEventSfxPaths } = require("./server/static");
 const BOT_TUNING = require("./server/botTuning");
 
 const PORT = Number(process.env.PORT) || 8080;
@@ -518,7 +518,7 @@ function sendHello(client) {
     colors: COLOR_OPTIONS,
     width: WIDTH,
     height: HEIGHT,
-    sfx: getEventSfxPaths()
+    sfx: getEventSfxPaths(SFX_DIR, EVENT_SFX_ALIASES)
   });
 }
 
