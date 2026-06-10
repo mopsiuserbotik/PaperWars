@@ -317,6 +317,31 @@ h1 {
   border-color: #202020;
 }
 
+.player-count-choices {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.player-count-choices button {
+  min-height: 38px;
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--button);
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.player-count-choices button.is-selected {
+  border-color: var(--ink);
+  background: var(--accent);
+  color: #fff;
+}
+
+.player-count-choices button:disabled {
+  opacity: 0.45;
+}
+
 .palette {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
@@ -557,9 +582,7 @@ h1 {
 .map-wrap {
   position: absolute;
   inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
   overflow: auto;
   padding: 72px 12px 78px;
   scrollbar-width: none;
@@ -650,6 +673,7 @@ h1 {
   box-shadow: var(--soft-shadow);
   contain: layout paint style;
   gap: 0;
+  margin: 0 auto;
   overflow: hidden;
   background: var(--paper);
 }
@@ -2475,16 +2499,8 @@ h1 {
   font-weight: 900;
 }
 
-@media (min-width: 760px) {
-  .map-wrap {
-    justify-content: center;
-  }
-}
-
 @media (max-width: 560px) {
   .map-wrap {
-    align-items: center;
-    justify-content: flex-start;
     padding: 88px 8px 86px;
   }
 

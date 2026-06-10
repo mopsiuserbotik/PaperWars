@@ -161,6 +161,7 @@ const els = {
   lobbySections: document.querySelectorAll("[data-lobby-section]"),
   lobbyPlayerCountField: document.querySelector("#lobbyPlayerCountField"),
   lobbyPlayerCountInput: document.querySelector("#lobbyPlayerCountInput"),
+  lobbyPlayerCountChoices: document.querySelector("#lobbyPlayerCountChoices"),
   lobbyPlayerSlots: document.querySelector("#lobbyPlayerSlots"),
   lobbyCodeField: document.querySelector("#lobbyCodeField"),
   lobbyCodeInput: document.querySelector("#lobbyCodeInput"),
@@ -259,10 +260,10 @@ let reconnectAttempts = 0;
 let heartbeatTimer = null;
 let serverFull = false;
 const SFX_NAMES = [
-  "attack", "drone", "drone_run", "d_house", "d_tehnika", "fail", "kreyser", "money", "osechka", "pvo", "rain", "raketa",
+  "attack", "drone", "drone_run", "d_house", "d_tehnika", "fail", "kreyser", "money", "osechka", "pvo", "rain", "raketa", "REB",
   "rpg", "rszo", "rszo_hit", "rszo_shot", "shahed", "soyuz", "stroyka", "tank", "tank_shot", "war", "win", "yaderka"
 ];
-const POSITIONAL_VOLUME_EXEMPT = new Set(["fail", "money", "rain", "soyuz", "war", "win", "yaderka"]);
+const POSITIONAL_VOLUME_EXEMPT = new Set(["fail", "money", "rain", "shahed", "soyuz", "war", "win", "yaderka"]);
 const SFX_PLAY_LIMIT_MS = {
   drone_run: 2000,
   tank: 2000
@@ -493,9 +494,23 @@ function bindUi() {
 
   els.lobbyPlayerCountInput?.addEventListener("input", () => {
     lobbySettings = readLobbySettings();
-    renderLobbyMode();
+    renderLobbyPlayerCountChoices();
     renderLobbyPlayerSlots();
     renderLobbyNotice();
+  });
+
+  els.lobbyPlayerCountInput?.addEventListener("change", () => {
+    setLobbyHumanCount(els.lobbyPlayerCountInput.value);
+  });
+
+  els.lobbyPlayerCountInput?.addEventListener("blur", () => {
+    setLobbyHumanCount(els.lobbyPlayerCountInput.value);
+  });
+
+  els.lobbyPlayerCountChoices?.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-lobby-player-count]");
+    if (!button || button.disabled) return;
+    setLobbyHumanCount(button.dataset.lobbyPlayerCount);
   });
 
   els.colorPalette.addEventListener("click", (event) => {
@@ -1041,12 +1056,14 @@ function renderLobbyMode() {
   els.lobbyPlayerCountField?.classList.toggle("hidden", lobbyMode !== "create");
   if (els.lobbyPlayerCountInput) {
     const settings = currentLobbySettings();
-    els.lobbyPlayerCountInput.min = String(lobby?.minHumans || 1);
-    els.lobbyPlayerCountInput.max = String(lobby?.maxHumanLimit || 7);
-    if (String(els.lobbyPlayerCountInput.value) !== String(settings.maxHumans || 2)) {
+    const limits = lobbyHumanLimits();
+    els.lobbyPlayerCountInput.min = String(limits.min);
+    els.lobbyPlayerCountInput.max = String(limits.max);
+    if (document.activeElement !== els.lobbyPlayerCountInput && String(els.lobbyPlayerCountInput.value) !== String(settings.maxHumans || 2)) {
       els.lobbyPlayerCountInput.value = String(settings.maxHumans || 2);
     }
   }
+  renderLobbyPlayerCountChoices();
   const lastStep = steps[steps.length - 1];
   els.lobbyPrevStep?.classList.toggle("hidden", onHome);
   els.lobbyNextStep?.classList.toggle("hidden", onHome || lobbyFormStep === lastStep);
@@ -1072,8 +1089,9 @@ function validateLobbyFormStep(step) {
       }
     } else {
       const count = Number(els.lobbyPlayerCountInput?.value);
-      if (!Number.isFinite(count) || count < 1 || count > 7) {
-        showToast("Игроков должно быть от 1 до 7.");
+      const limits = lobbyHumanLimits();
+      if (!Number.isFinite(count) || count < limits.min || count > limits.max) {
+        showToast(`Игроков должно быть от ${limits.min} до ${limits.max}.`);
         return false;
       }
     }
@@ -1179,10 +1197,41 @@ function currentLobbySettings() {
   return lobbySettings;
 }
 
+function lobbyHumanLimits() {
+  return {
+    min: lobby?.minHumans || 1,
+    max: lobby?.maxHumanLimit || 7
+  };
+}
+
+function setLobbyHumanCount(value) {
+  const limits = lobbyHumanLimits();
+  const next = clamp(Math.round(Number(value) || 2), limits.min, limits.max);
+  const settings = normalizeLobbySettings(lobbySettings || lobby?.settings);
+  settings.maxHumans = next;
+  lobbySettings = settings;
+  if (els.lobbyPlayerCountInput) els.lobbyPlayerCountInput.value = String(next);
+  renderLobbyMode();
+  renderLobbyPlayerSlots();
+  renderLobbyNotice();
+}
+
+function renderLobbyPlayerCountChoices() {
+  if (!els.lobbyPlayerCountChoices) return;
+  const settings = currentLobbySettings();
+  const limits = lobbyHumanLimits();
+  const selected = clamp(Math.round(Number(settings.maxHumans) || 2), limits.min, limits.max);
+  els.lobbyPlayerCountChoices.classList.toggle("hidden", lobbyMode !== "create");
+  els.lobbyPlayerCountChoices.innerHTML = Array.from({ length: limits.max - limits.min + 1 }, (_, index) => limits.min + index)
+    .map((count) => `<button class="${count === selected ? "is-selected" : ""}" data-lobby-player-count="${count}" type="button">${count}</button>`)
+    .join("");
+}
+
 function normalizeLobbySettings(raw = {}) {
   raw = raw || {};
+  const limits = lobbyHumanLimits();
   const settings = {
-    maxHumans: clamp(Math.round(Number(raw.maxHumans) || 2), lobby?.minHumans || 1, lobby?.maxHumanLimit || 7),
+    maxHumans: clamp(Math.round(Number(raw.maxHumans) || 2), limits.min, limits.max),
     bots: {},
     randomEvents: raw.randomEvents !== false,
     incomeMultipliers: {}
@@ -1200,8 +1249,9 @@ function normalizeLobbySettings(raw = {}) {
 function readLobbySettings() {
   const settings = normalizeLobbySettings(lobbySettings || lobby?.settings);
   const maxHumans = Number(els.lobbyPlayerCountInput?.value);
+  const limits = lobbyHumanLimits();
   if (Number.isFinite(maxHumans)) {
-    settings.maxHumans = clamp(Math.round(maxHumans), lobby?.minHumans || 1, lobby?.maxHumanLimit || 7);
+    settings.maxHumans = clamp(Math.round(maxHumans), limits.min, limits.max);
   }
   els.lobbySettings?.querySelectorAll("[data-lobby-bot]").forEach((input) => {
     settings.bots[input.dataset.lobbyBot] = input.checked;
@@ -1717,6 +1767,7 @@ function canMoveInto(target, source, request) {
   const rawWater = target.terrain === "water" && target.building?.type !== "bridge";
   const airMove = request.drone || request.saboteur;
   const landMove = request.inf + request.rpg + (request.tank ? 1 : 0) + (request.mlrs ? 1 : 0) + request.ew;
+  const droneOnlyMove = (request.drone || 0) > 0 && landMove <= 0 && !request.boat && !request.cruiser && !request.saboteur;
   if (rawWater) {
     if (landMove > 0 && !request.boat && !request.cruiser) return false;
     if (request.ew) return false;
@@ -1728,7 +1779,7 @@ function canMoveInto(target, source, request) {
   } else if (!isPassableCell(target)) {
     return false;
   }
-  if (target.owner && target.owner !== me && relationStatus(target.owner) !== "war" && !controlsOwner(target.owner)) return false;
+  if (!droneOnlyMove && target.owner && target.owner !== me && relationStatus(target.owner) !== "war" && !controlsOwner(target.owner)) return false;
   const targetOwnUnits = target.units?.[me] || {};
   if (request.rpg && targetOwnUnits.rpg) return false;
   if (request.tank && targetOwnUnits.tank) return false;
@@ -2005,7 +2056,7 @@ function actionsDiplomacyHtml({ vassal, hasVassals }) {
         ${vassal ? disabledCommandButton("🤝 Союз", "сюзерен") : commandButton("ally", "", "🤝 Союз", "страна")}
         ${vassal ? disabledCommandButton("⚑ Война", "сюзерен") : commandButton("war", "", "⚑ Война", "страна")}
         ${vassal ? disabledCommandButton("⚠ Ультиматум", "сюзерен") : commandButton("ultimatum", "", "⚠ Ультиматум", "вассалитет")}
-        ${vassal ? disabledCommandButton("🕊 Освободить", "сюзерен") : (hasVassals ? commandButton("releaseVassal", "", "🕊 Освободить", "вассал") : "")}
+        ${vassal ? disabledCommandButton("🕊 Освободить", "сюзерен") : (hasVassals ? commandButton("releaseVassal", "", "🕊 Освободить", "вассал") : disabledCommandButton("🕊 Освободить", "нет вассалов"))}
         ${vassal ? disabledCommandButton("🎁 Передать", "сюзерен") : commandButton("transfer", "", "🎁 Передать", "страна")}
         ${vassal ? disabledCommandButton("🙏 Запросить", "сюзерен") : commandButton("requestResources", "", "🙏 Запросить", "страна")}
         ${vassal ? disabledCommandButton("🕶 Спецоперация", "сюзерен") : commandButton("specialOp", "", "🕶 Спецоперация", "страна")}
@@ -3328,21 +3379,33 @@ function centerHomeOnce(force = false) {
     if (!wrap) return;
     const homeCell = findHomeCell();
     if (!homeCell) {
-      wrap.scrollLeft = Math.max(0, (els.map.scrollWidth - wrap.clientWidth) / 2);
-      wrap.scrollTop = Math.max(0, (els.map.scrollHeight - wrap.clientHeight) / 2);
+      scrollMapToFraction(0.5, 0.5, force ? "smooth" : "auto");
       return;
     }
     const width = state.width || 34;
     const height = state.height || 24;
-    const cellWidth = els.map.scrollWidth / width;
-    const cellHeight = els.map.scrollHeight / height;
-    const left = (homeCell.x + 0.5) * cellWidth - wrap.clientWidth / 2;
-    const top = (homeCell.y + 0.5) * cellHeight - wrap.clientHeight / 2;
-    wrap.scrollTo({
-      left: clamp(left, 0, Math.max(0, els.map.scrollWidth - wrap.clientWidth)),
-      top: clamp(top, 0, Math.max(0, els.map.scrollHeight - wrap.clientHeight)),
-      behavior: force ? "smooth" : "auto"
-    });
+    scrollMapToFraction((homeCell.x + 0.5) / width, (homeCell.y + 0.5) / height, force ? "smooth" : "auto");
+  });
+}
+
+function currentMapViewFraction() {
+  const wrap = els.map?.parentElement;
+  if (!wrap || !els.map?.offsetWidth || !els.map?.offsetHeight) return null;
+  return {
+    x: clamp((wrap.scrollLeft + wrap.clientWidth / 2 - els.map.offsetLeft) / els.map.offsetWidth, 0, 1),
+    y: clamp((wrap.scrollTop + wrap.clientHeight / 2 - els.map.offsetTop) / els.map.offsetHeight, 0, 1)
+  };
+}
+
+function scrollMapToFraction(x, y, behavior = "auto") {
+  const wrap = els.map?.parentElement;
+  if (!wrap || !els.map?.offsetWidth || !els.map?.offsetHeight) return;
+  const left = els.map.offsetLeft + clamp(x, 0, 1) * els.map.offsetWidth - wrap.clientWidth / 2;
+  const top = els.map.offsetTop + clamp(y, 0, 1) * els.map.offsetHeight - wrap.clientHeight / 2;
+  wrap.scrollTo({
+    left: clamp(left, 0, Math.max(0, wrap.scrollWidth - wrap.clientWidth)),
+    top: clamp(top, 0, Math.max(0, wrap.scrollHeight - wrap.clientHeight)),
+    behavior
   });
 }
 
@@ -3472,8 +3535,12 @@ function pointerDistance(a, b) {
 function setMapZoom(value) {
   const nextZoom = clamp(value, 0.72, 2.8);
   if (Math.abs(nextZoom - mapZoom) < 0.001) return;
+  const center = currentMapViewFraction();
   mapZoom = nextZoom;
   els.map.style.setProperty("--map-zoom", mapZoom.toFixed(2));
+  if (center) {
+    requestAnimationFrame(() => scrollMapToFraction(center.x, center.y));
+  }
 }
 
 function registerServiceWorker() {

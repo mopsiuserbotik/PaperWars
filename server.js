@@ -2889,7 +2889,8 @@ function handleMove(client, message) {
       sendError(client, "На клетке нет дронов или Шахедов.");
       return;
     }
-    if (to.owner && to.owner !== playerId && !isHostile(playerId, to.owner) && !controlsOwner(playerId, to.owner)) {
+    const droneOnlyMove = moved.drone > 0 && moved.saboteur <= 0;
+    if (!droneOnlyMove && to.owner && to.owner !== playerId && !isHostile(playerId, to.owner) && !controlsOwner(playerId, to.owner)) {
       sendError(client, "Воздушные юниты можно заводить к врагу, нейтралу или вассалу.");
       return;
     }
@@ -3193,7 +3194,8 @@ function handleTankShot(client, message) {
 
   const lossSnapshot = armyGoldSnapshot();
   const techBefore = hostileTechUnitCount(playerId, target);
-  for (const enemyId of hostileUnitIdsAtCell(playerId, target)) {
+  declareWarsForCellAttack(playerId, target);
+  for (const enemyId of damageableUnitIdsAtCell(playerId, target)) {
     const enemyUnits = unitsFor(target, enemyId);
     enemyUnits.inf = Math.max(0, enemyUnits.inf - 2);
     enemyUnits.rpg = Math.max(0, enemyUnits.rpg - 1);
@@ -3252,6 +3254,7 @@ function handleRpgShot(client, message) {
     return;
   }
 
+  declareWarsForCellAttack(playerId, target);
   spend(player, { ammo: 1 });
   applyArmyLossEffects(lossSnapshot, playerId);
   emitTechDestroyedIfChanged(techBefore, target, playerId);
@@ -3268,7 +3271,7 @@ function handleRpgShot(client, message) {
 
 function damageRpgCell(playerId, cell) {
   if (!cell) return null;
-  for (const enemyId of hostileUnitIdsAtCell(playerId, cell)) {
+  for (const enemyId of damageableUnitIdsAtCell(playerId, cell)) {
     const enemyUnits = unitsFor(cell, enemyId);
     const hit = ["tank", "mlrs", "rocket", "aaPlus", "aa", "ew"].find((unit) => (enemyUnits[unit] || 0) > 0);
     if (!hit) continue;
@@ -3310,6 +3313,7 @@ function handleRocketStrike(client, message) {
 function launchRocketStrike(playerId, from, target, client = null) {
   const player = game.players[playerId];
   if (!player || !from || !target) return false;
+  declareWarsForCellAttack(playerId, target);
   setWeaponCooldown(from, player, playerId, "rocket");
   emitFlight("rocket", from, target, ROCKET_FLIGHT_MS, { playerId });
   emitSfx("raketa", target.x, target.y, { playerId });
@@ -3366,8 +3370,9 @@ function maybeMisfire(playerId, cell, weapon) {
 
 function damageRocketCell(playerId, cell) {
   if (!cell) return;
+  declareWarsForCellAttack(playerId, cell);
   const rain = activeEventType("rain");
-  for (const enemyId of hostileUnitIdsAtCell(playerId, cell)) {
+  for (const enemyId of damageableUnitIdsAtCell(playerId, cell)) {
     const enemyUnits = unitsFor(cell, enemyId);
     if ((enemyUnits.ew || 0) > 0) {
       enemyUnits.ew = 0;
@@ -3382,17 +3387,18 @@ function damageRocketCell(playerId, cell) {
       }
     }
   }
-  if (cell.building?.type === "bunker" && isHostile(playerId, cell.building.owner)) {
+  if (cell.building?.type === "bunker" && isDamageableOwner(playerId, cell.building.owner)) {
     return;
   }
-  if (cell.building && isHostile(playerId, cell.building.owner) && (!rain || Math.random() < 0.5)) {
+  if (cell.building && isDamageableOwner(playerId, cell.building.owner) && (!rain || Math.random() < 0.5)) {
     destroyBuilding(cell, playerId);
   }
 }
 
 function damageMlrsCell(playerId, cell) {
   if (!cell) return;
-  for (const enemyId of hostileUnitIdsAtCell(playerId, cell)) {
+  declareWarsForCellAttack(playerId, cell);
+  for (const enemyId of damageableUnitIdsAtCell(playerId, cell)) {
     const enemyUnits = unitsFor(cell, enemyId);
     enemyUnits.ew = 0;
     if (bunkerProtects(cell, enemyId)) {
@@ -3423,7 +3429,8 @@ function mlrsSalvoCells(target) {
 
 function damageCruiserCell(playerId, cell) {
   if (!cell) return;
-  for (const enemyId of hostileUnitIdsAtCell(playerId, cell)) {
+  declareWarsForCellAttack(playerId, cell);
+  for (const enemyId of damageableUnitIdsAtCell(playerId, cell)) {
     const enemyUnits = unitsFor(cell, enemyId);
     enemyUnits.ew = Math.max(0, enemyUnits.ew - 1);
     if ((enemyUnits.cruiser || 0) > 0) {
@@ -3437,7 +3444,7 @@ function damageCruiserCell(playerId, cell) {
     enemyUnits.inf = Math.max(0, enemyUnits.inf - 2);
     enemyUnits.rpg = Math.max(0, enemyUnits.rpg - 1);
   }
-  if (cell.building && isHostile(playerId, cell.building.owner)) {
+  if (cell.building && isDamageableOwner(playerId, cell.building.owner)) {
     destroyBuilding(cell, playerId);
   }
 }
@@ -3469,6 +3476,7 @@ function handleMlrs(client, message) {
 
   for (const cell of mlrsSalvoCells(target)) {
     const techBefore = hostileTechUnitCount(playerId, cell);
+    declareWarsForCellAttack(playerId, cell);
     damageMlrsCell(playerId, cell);
     emitTechDestroyedIfChanged(techBefore, cell, playerId);
     pruneWeaponCooldowns(cell);
@@ -3513,6 +3521,7 @@ function handleCruiserSalvo(client, message) {
 
   const lossSnapshot = armyGoldSnapshot();
   const techBefore = hostileTechUnitCount(playerId, target);
+  declareWarsForCellAttack(playerId, target);
   for (let index = 0; index < 2; index += 1) {
     damageCruiserCell(playerId, target);
     pruneWeaponCooldowns(target);
@@ -3538,7 +3547,7 @@ function handleDroneDetonation(client, message) {
     return;
   }
 
-  const defenders = hostileUnitIdsAtCell(playerId, cell);
+  const defenders = damageableUnitIdsAtCell(playerId, cell);
   if (!defenders.length) {
     sendError(client, "На клетке нет вражеской цели для дрона.");
     return;
@@ -3549,11 +3558,12 @@ function handleDroneDetonation(client, message) {
 }
 
 function detonateDroneAt(playerId, cell) {
-  const defenders = hostileUnitIdsAtCell(playerId, cell);
+  const defenders = damageableUnitIdsAtCell(playerId, cell);
   const lossSnapshot = armyGoldSnapshot();
   const techBefore = hostileTechUnitCount(playerId, cell);
   const ownUnits = unitsFor(cell, playerId);
   ownUnits.drone = Math.max(0, ownUnits.drone - 1);
+  declareWarsForCellAttack(playerId, cell);
 
   let hitText = "";
   let destroyed = false;
@@ -3601,7 +3611,7 @@ function handleSaboteurDetonation(client, message) {
     return;
   }
 
-  if (!cell.building || !cell.building.owner || !isHostile(playerId, cell.building.owner)) {
+  if (!cell.building || !cell.building.owner || !isDamageableOwner(playerId, cell.building.owner)) {
     sendError(client, "Шахед бьет только по вражеским постройкам.");
     return;
   }
@@ -3612,10 +3622,11 @@ function handleSaboteurDetonation(client, message) {
 
 function detonateSaboteurAt(playerId, cell) {
   const ownUnits = unitsFor(cell, playerId);
-  if ((ownUnits.saboteur || 0) <= 0 || !cell.building?.owner || !isHostile(playerId, cell.building.owner)) return false;
+  if ((ownUnits.saboteur || 0) <= 0 || !cell.building?.owner || !isDamageableOwner(playerId, cell.building.owner)) return false;
   const targetOwner = cell.building.owner;
   const buildingLabel = BUILDINGS[cell.building.type]?.label || "постройку";
   ownUnits.saboteur = Math.max(0, ownUnits.saboteur - 1);
+  declareWarsForCellAttack(playerId, cell);
   destroyBuilding(cell, playerId);
   touchMap();
   emitSfx("shot", cell.x, cell.y, { weapon: "saboteur", playerId });
@@ -3697,6 +3708,7 @@ function handleShahedStrike(client, message) {
 function launchShahedStrike(playerId, target, factory) {
   const player = game.players[playerId];
   if (!player || !target || !factory) return false;
+  declareWarsForCellAttack(playerId, target);
   spend(player, UNITS.saboteur.cost);
   setCooldown(player, "saboteur");
   emitFlight("shahed", factory, target, SHAHED_FLIGHT_MS, { playerId });
@@ -3729,7 +3741,7 @@ function resolveShahedImpact(playerId, tx, ty) {
 
   let targetOwner = target.building?.owner || null;
   let buildingLabel = "";
-  if (target.building && targetOwner && isHostile(playerId, targetOwner)) {
+  if (target.building && targetOwner && isDamageableOwner(playerId, targetOwner)) {
     buildingLabel = BUILDINGS[target.building.type]?.label || "постройку";
     destroyBuilding(target, playerId);
   }
@@ -3793,6 +3805,7 @@ function launchNuke(playerId, target, client = null, plantCell = null) {
   const player = game.players[playerId];
   const plant = plantCell || readyNuclearPlant(playerId);
   if (!plant) return { failed: true };
+  declareWarsForCellAttack(playerId, target);
   spend(player, NUCLEAR_COST);
   setNuclearPlantCooldown(plant, player);
   const launchCell = nukeLaunchCell(playerId, plant);
@@ -3828,6 +3841,7 @@ function resolveNukeImpact(playerId, tx, ty, client = null) {
     for (let x = target.x - 1; x <= target.x + 1; x += 1) {
       const cell = getCell(x, y);
       if (!cell) continue;
+      declareWarsForCellAttack(playerId, cell);
       const bunkerOwner = cell.building?.type === "bunker" ? cell.building.owner : null;
       const protectedInf = bunkerOwner ? (unitsFor(cell, bunkerOwner).inf || 0) : 0;
       for (const id of PLAYER_IDS) {
@@ -7453,7 +7467,7 @@ function interceptDronesEnteringCell(playerId, cell, moved) {
   const lossSnapshot = armyGoldSnapshot();
   moved.drone = 0;
   applyArmyLossEffects(lossSnapshot, blocker.ownerId);
-  emitSfx("shot", blocker.cell.x, blocker.cell.y, { weapon: "aa", playerId: blocker.ownerId });
+  emitSfx("REB", blocker.cell.x, blocker.cell.y, { playerId: blocker.ownerId });
   emitExplosions([{ x: cell.x, y: cell.y, kind: "aa" }]);
   addSystemEvent(`${game.players[blocker.ownerId]?.country || "РЭБ"} сбивает вражеский дрон у ${cell.x + 1}:${cell.y + 1}.`, { sound: "alert" });
   return true;
@@ -7494,7 +7508,7 @@ function interceptHostileDronesNearEw(playerId, ewCell) {
     }
   });
   if (intercepted) {
-    emitSfx("shot", ewCell.x, ewCell.y, { weapon: "aa", playerId });
+    emitSfx("REB", ewCell.x, ewCell.y, { playerId });
     emitExplosions(blasts);
   }
   return intercepted;
@@ -7625,6 +7639,15 @@ function markPlayerDefeated(playerId) {
     if (deal.from === playerId || deal.to === playerId) delete game.supportDeals[key];
   }
   forEachCell((cell) => {
+    if (cell.owner === playerId) {
+      cell.owner = null;
+    }
+    if (cell.building?.owner === playerId) {
+      cell.building.owner = null;
+    }
+    if (cell.construction?.owner === playerId) {
+      cell.construction = null;
+    }
     cell.units[playerId] = emptyUnits();
     cell.cooldowns[playerId] = emptyWeaponCooldowns();
   });
@@ -7749,7 +7772,7 @@ function armyGoldSnapshot() {
 function hostileTechUnitCount(playerId, cell) {
   if (!cell) return 0;
   let count = 0;
-  for (const enemyId of hostilePlayerIds(playerId)) {
+  for (const enemyId of damageablePlayerIds(playerId)) {
     const units = unitsFor(cell, enemyId);
     for (const unit of TECH_SFX_UNITS) {
       count += units[unit] || 0;
@@ -8173,6 +8196,14 @@ function isAllied(a, b) {
   return relationStatus(a, b) === "alliance" || isVassalOf(a, b) || isVassalOf(b, a);
 }
 
+function isDamageableOwner(attackerId, ownerId) {
+  return Boolean(ownerId && ownerId !== attackerId && !isAllied(attackerId, ownerId));
+}
+
+function damageablePlayerIds(playerId) {
+  return PLAYER_IDS.filter((id) => isDamageableOwner(playerId, id));
+}
+
 function hostilePlayerIds(playerId) {
   return PLAYER_IDS.filter((id) => id !== playerId && isHostile(playerId, id));
 }
@@ -8194,6 +8225,29 @@ function hostileUnitIdsAtCell(playerId, cell) {
     const units = unitsFor(cell, id);
     return unitPower(units) > 0 || (units.ew || 0) > 0 || (units.boat || 0) > 0 || (units.cruiser || 0) > 0;
   });
+}
+
+function damageableUnitIdsAtCell(playerId, cell) {
+  return damageablePlayerIds(playerId).filter((id) => {
+    const units = unitsFor(cell, id);
+    return unitPower(units) > 0 || (units.ew || 0) > 0 || (units.boat || 0) > 0 || (units.cruiser || 0) > 0;
+  });
+}
+
+function declareWarsForCellAttack(attackerId, cell) {
+  if (!cell || !game.players[attackerId]) return;
+  const targetIds = new Set();
+  if (isDamageableOwner(attackerId, cell.owner)) targetIds.add(cell.owner);
+  if (isDamageableOwner(attackerId, cell.building?.owner)) targetIds.add(cell.building.owner);
+  for (const targetId of damageableUnitIdsAtCell(attackerId, cell)) {
+    targetIds.add(targetId);
+  }
+  for (const targetId of targetIds) {
+    if (relationStatus(attackerId, targetId) !== "war") {
+      declareWar(attackerId, targetId);
+      if (game.players[targetId]?.isBot) game.players[targetId].lastBotAction = 0;
+    }
+  }
 }
 
 function defenderNames(ids) {
