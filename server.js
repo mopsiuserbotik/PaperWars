@@ -43,6 +43,11 @@ const BOT_TURN_STAGGER_MS = BOT_TUNING.turnStaggerMs;
 const BOT_MOVE_COOLDOWN_MS = BOT_TUNING.moveCooldownMs;
 const BOT_MOVE_JITTER_MS = BOT_TUNING.moveJitterMs;
 const BOT_RETRY_COOLDOWN_MS = BOT_TUNING.retryCooldownMs;
+const BOT_WAR_TURN_INTERVAL_MS = 1_200;
+const BOT_MOBILIZATION_TOGGLE_COOLDOWN_MS = 45_000;
+const BOT_DRONE_ACTION_COOLDOWN_MS = 2_800;
+const BOT_DRONE_STACK_LIMIT = 4;
+const BOT_DRONE_TARGET_CLUSTER_LIMIT = 9;
 const GAME_LOOP_INTERVAL_MS = 500;
 const INCOME_CHECK_INTERVAL_MS = 1_000;
 const HQ_REBUILD_WINDOW_MS = 100_000;
@@ -2132,7 +2137,7 @@ function handleDevResources(client, message) {
     if (!game.activeEvent && !game.pendingEvent) {
       game.nextRandomEventAt = Date.now() + RANDOM_EVENT_INTERVAL_MS;
     }
-    sendInfo(client, "Random events enabled.");
+    sendInfo(client, "Автособытия включены.");
     broadcastStateNow();
     return;
   }
@@ -2142,7 +2147,7 @@ function handleDevResources(client, message) {
     game.activeEvent = null;
     game.pendingEvent = null;
     game.nextRandomEventAt = 0;
-    sendInfo(client, "Random events disabled.");
+    sendInfo(client, "Автособытия выключены.");
     broadcastStateNow();
     return;
   }
@@ -2217,7 +2222,7 @@ function handleDevResources(client, message) {
     }
     clearCooldownsForPlayer(targetId);
     touchMap();
-    sendInfo(client, `${target.country}: cooldowns cleared.`);
+      sendInfo(client, `${target.country}: перезарядки убраны.`);
     broadcastStateNow();
     return;
   }
@@ -2228,9 +2233,9 @@ function handleDevResources(client, message) {
       restoreCooldownSnapshot(snapshot, targetId);
       delete game.devPlayerCooldownSnapshots[targetId];
       touchMap();
-      sendInfo(client, `${target.country}: cooldowns restored.`);
+      sendInfo(client, `${target.country}: перезарядки возвращены.`);
     } else {
-      sendInfo(client, `${target.country}: no cooldown snapshot.`);
+      sendInfo(client, `${target.country}: нет сохраненных перезарядок.`);
     }
     broadcastStateNow();
     return;
@@ -2245,7 +2250,7 @@ function handleDevResources(client, message) {
 
   if (action === "zeroResources") {
     setResourcesExact(target, Object.fromEntries(RESOURCE_KEYS.map((key) => [key, 0])));
-    sendInfo(client, `${target.country}: resources zeroed.`);
+    sendInfo(client, `${target.country}: ресурсы обнулены.`);
     broadcastStateNow();
     return;
   }
@@ -2253,11 +2258,11 @@ function handleDevResources(client, message) {
   if (action === "addResources" || action === "subtractResources") {
     const resourceDelta = sanitizeResourceBundle(message.resources);
     if (resourceBundleEmpty(resourceDelta)) {
-      sendError(client, "Set at least one resource amount.");
+      sendError(client, "Укажи хотя бы один ресурс.");
       return;
     }
     addDevResources(target, resourceDelta, action === "subtractResources" ? -1 : 1);
-    sendInfo(client, `${target.country}: resources updated.`);
+    sendInfo(client, `${target.country}: ресурсы обновлены.`);
     broadcastStateNow();
     return;
   }
@@ -4032,6 +4037,8 @@ function createPlayer(id) {
     lastFactory: Date.now(),
     lastBotAction: Date.now() - BOT_TURN_INTERVAL_MS + randomInt(0, BOT_TURN_STAGGER_MS),
     lastDiplomacy: Date.now(),
+    lastBotMobilizationAt: 0,
+    nextBotDroneAt: 0,
     nextBotMove: Date.now() + randomInt(500, BOT_MOVE_COOLDOWN_MS)
   };
 }
@@ -4411,7 +4418,8 @@ function runDueBotTurn(now = Date.now()) {
     const playerId = bots[index];
     const player = game.players[playerId];
     const atWar = playerAtWar(playerId);
-    if (!player || (!atWar && now - player.lastBotAction < BOT_TURN_INTERVAL_MS)) continue;
+    const turnInterval = atWar ? BOT_WAR_TURN_INTERVAL_MS : BOT_TURN_INTERVAL_MS;
+    if (!player || now - player.lastBotAction < turnInterval) continue;
     player.lastBotAction = atWar ? now : now + randomInt(0, BOT_TURN_STAGGER_MS);
     game.botCursor = (index + 1) % bots.length;
     return runBotTurn(playerId);
@@ -4592,16 +4600,20 @@ function tryBotMobilization(playerId) {
   if (mobilizationActive(playerId, now)) {
     const enoughInf = stats.inf >= Math.max(5, stats.cells * 0.45);
     if (!shouldMobilize || enoughInf) {
+      if (now - (player.lastBotMobilizationAt || 0) < BOT_MOBILIZATION_TOGGLE_COOLDOWN_MS) return false;
       player.mobilizationActive = false;
       player.mobilizationStartedAt = 0;
+      player.lastBotMobilizationAt = now;
       addSystemEvent(`${player.country} выключает мобилизацию через ТЦК.`, { sound: "diplomacy" });
       return true;
     }
     return false;
   }
   if (!shouldMobilize) return false;
+  if (now - (player.lastBotMobilizationAt || 0) < BOT_MOBILIZATION_TOGGLE_COOLDOWN_MS) return false;
   player.mobilizationActive = true;
   player.mobilizationStartedAt = now;
+  player.lastBotMobilizationAt = now;
   addSystemEvent(`${player.country} включает мобилизацию через ТЦК.`, { sound: "diplomacy" });
   return true;
 }
@@ -6028,6 +6040,7 @@ function findBotVesselHireCell(playerId, kind) {
 function botCanHireHeavyUnit(playerId, kind, minMet) {
   const player = game.players[playerId];
   const counts = countBuildings(playerId);
+  if (kind === "drone" && computeStats(playerId).drone >= botDroneLimit(playerId)) return false;
   if ((counts.factory || 0) < 1) return false;
   if (isBotRich(playerId)) return true;
   // AA можно без шахты (только золото+pop), остальное требует железо → нужна шахта
@@ -6042,6 +6055,13 @@ function botCanHireHeavyUnit(playerId, kind, minMet) {
     return true;
   }
   return minMet;
+}
+
+function botDroneLimit(playerId) {
+  const player = game.players[playerId];
+  const stats = computeStats(playerId);
+  const personalityBonus = player?.personality === "aggressive" ? 3 : player?.personality === "industrial" ? 2 : 0;
+  return clamp(5 + personalityBonus + Math.floor((stats.cells || 0) / 5), 5, 14);
 }
 
 function botShouldHireDefensiveInf(playerId) {
@@ -6539,11 +6559,14 @@ function botFindNearestEnemyCell(playerId, from) {
 
 function tryBotDrone(playerId) {
   const player = game.players[playerId];
+  const now = Date.now();
   if (!player || isDefeated(playerId)) return false;
+  if (now < (player.nextBotDroneAt || 0)) return false;
   const droneCells = shuffle(allCells(game.map).filter((cell) => (unitsFor(cell, playerId).drone || 0) > 0));
   for (const cell of droneCells) {
     if (hostileUnitIdsAtCell(playerId, cell).length) {
       detonateDroneAt(playerId, cell);
+      player.nextBotDroneAt = now + BOT_DRONE_ACTION_COOLDOWN_MS + randomInt(0, BOT_MOVE_JITTER_MS);
       return true;
     }
   }
@@ -6551,10 +6574,12 @@ function tryBotDrone(playerId) {
   for (const from of droneCells) {
     const target = botFindDroneTarget(playerId, from);
     if (!target) continue;
+    if (botDroneTargetSaturated(playerId, target)) continue;
     const fromDist = distance(from, target);
     const step = shuffle(neighbors(from.x, from.y).map(([x, y]) => getCell(x, y)).filter(Boolean))
       .filter((cell) => {
         if (cell.owner && cell.owner !== playerId && !isHostile(playerId, cell.owner) && !controlsOwner(playerId, cell.owner)) return false;
+        if ((cell.units?.[playerId]?.drone || 0) >= BOT_DRONE_STACK_LIMIT) return false;
         return distance(cell, target) < fromDist;
       })
       .sort((a, b) => distance(a, target) - distance(b, target))[0];
@@ -6566,9 +6591,20 @@ function tryBotDrone(playerId) {
     unitsFor(step, playerId).drone += 1;
     emitSfx("drone_run", step.x, step.y, { playerId });
     touchMap();
+    player.nextBotDroneAt = now + BOT_DRONE_ACTION_COOLDOWN_MS + randomInt(0, BOT_MOVE_JITTER_MS);
     return true;
   }
   return false;
+}
+
+function botDroneTargetSaturated(playerId, target) {
+  let nearbyDrones = 0;
+  forEachCell((cell) => {
+    if (distance(cell, target) <= 2) {
+      nearbyDrones += cell.units?.[playerId]?.drone || 0;
+    }
+  });
+  return nearbyDrones >= BOT_DRONE_TARGET_CLUSTER_LIMIT;
 }
 
 function tryBotSaboteur(playerId) {
@@ -7574,6 +7610,13 @@ function checkVictory() {
   }
 
   const contenders = activeContenderIds();
+  const independentContenders = independentContenderIds(contenders);
+  if (independentContenders.length === 1 && contenders.length > 1) {
+    const winnerId = independentContenders[0];
+    endGame(winnerId, `${game.players[winnerId]?.country || "Победитель"} осталась последней независимой страной; оставшиеся страны являются ее вассалами.`);
+    return;
+  }
+
   const targetHumanCount = sanitizeHumanCount(game.settings?.maxHumans);
   if (game.continuedWithBots || targetHumanCount <= 1) {
     if (contenders.length === 1) {
@@ -7611,6 +7654,21 @@ function activeContenderIds() {
   return PLAYER_IDS.filter((id) => {
     const player = game.players[id];
     return player && player.joined && !player.defeated && computeStats(id).cells > 0;
+  });
+}
+
+function independentContenderIds(contenders = activeContenderIds()) {
+  const alive = new Set(contenders);
+  return contenders.filter((id) => {
+    let overlordId = game.players[id]?.vassalOf || null;
+    const seen = new Set([id]);
+    while (overlordId && alive.has(overlordId) && !seen.has(overlordId)) {
+      seen.add(overlordId);
+      const nextOverlord = game.players[overlordId]?.vassalOf || null;
+      if (!nextOverlord || !alive.has(nextOverlord)) return false;
+      overlordId = nextOverlord;
+    }
+    return !overlordId || !alive.has(overlordId);
   });
 }
 

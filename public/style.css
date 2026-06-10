@@ -13,7 +13,7 @@
   --tab-bg: #eeeeeb;
   --grid-line: rgba(0, 0, 0, 0.06);
   --battle-bg: #f1f1ee;
-  --water: #9fa8a3;
+  --water: #4aa3ff;
   --gold: #f4c84f;
   --uranium: #63d28b;
   --bridge: #8f6a45;
@@ -42,7 +42,7 @@
   --tab-bg: #101f15;
   --grid-line: rgba(72, 255, 135, 0.085);
   --battle-bg: #060b08;
-  --water: #173128;
+  --water: #1677d2;
   --ok: #59ef8b;
   --accent: #42df78;
   --accent-strong: #2fba64;
@@ -737,6 +737,27 @@ h1 {
 .world-event.is-warning {
   border-color: rgba(190, 64, 35, 0.45);
   background: #fff7df;
+}
+
+.target-prompt {
+  position: absolute;
+  top: 170px;
+  left: 50%;
+  z-index: 39;
+  width: min(520px, calc(100vw - 24px));
+  transform: translateX(-50%);
+  padding: 10px 14px;
+  border: 2px solid var(--danger);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-solid) 92%, var(--danger) 8%);
+  box-shadow: 0 12px 30px rgba(216, 68, 68, 0.24);
+  color: var(--danger);
+  font-size: 15px;
+  font-weight: 950;
+  letter-spacing: 0;
+  line-height: 1.15;
+  text-align: center;
+  pointer-events: none;
 }
 
 /* ── MAP CONTAINER ───────────────────────────────────────────── */
@@ -2700,6 +2721,10 @@ h1 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.dev-actions--global {
+  grid-template-columns: 1fr;
+}
+
 .dev-actions button,
 .dev-cheats {
   display: grid;
@@ -2770,6 +2795,10 @@ h1 {
     grid-template-columns: 1fr 1fr;
   }
 
+  .dev-actions--global {
+    grid-template-columns: 1fr;
+  }
+
   .dev-resource-head,
   .dev-resource-row {
     grid-template-columns: minmax(92px, 1fr) 76px 76px;
@@ -2793,6 +2822,7 @@ h1 {
     gap: 12px;
     width: 100%;
     max-height: calc(100dvh - 20px);
+    overflow-x: hidden;
     padding: 14px;
   }
 
@@ -2806,10 +2836,25 @@ h1 {
   .lobby-notice,
   .connection {
     grid-column: 1;
+    min-width: 0;
   }
 
   .brand {
+    grid-template-columns: 48px minmax(0, 1fr);
+    align-items: center;
     padding-right: 0;
+  }
+
+  .brand__mark {
+    width: 48px;
+    height: 48px;
+    font-size: 26px;
+  }
+
+  .brand h1 {
+    font-size: 24px;
+    line-height: 1.05;
+    overflow-wrap: anywhere;
   }
 
   .lobby-tools {
@@ -2864,6 +2909,13 @@ h1 {
     top: 124px;
     width: min(330px, calc(100vw - 18px));
     font-size: 10px;
+  }
+
+  .target-prompt {
+    top: 164px;
+    width: min(350px, calc(100vw - 18px));
+    padding: 8px 10px;
+    font-size: 12px;
   }
 
   .quick-status {

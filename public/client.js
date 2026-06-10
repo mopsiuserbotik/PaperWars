@@ -41,6 +41,10 @@ const RESOURCE_DEFS = [
   { key: "ammo", label: "боеприпасы", icon: "💣" },
   { key: "uranium", label: "уран", icon: "☢" }
 ];
+const LAUNCH_COSTS = {
+  nuke: { gold: 90, iron: 30, uranium: 20, pop: 3 },
+  shahed: { pop: 1, gold: 45, iron: 6, ammo: 4 }
+};
 
 const TERRAIN_NAMES = {
   land: "земля",
@@ -181,6 +185,7 @@ const els = {
   quickStatus: document.querySelector("#quickStatus"),
   eventBanner: document.querySelector("#eventBanner"),
   worldEventStatus: document.querySelector("#worldEventStatus"),
+  targetPrompt: document.querySelector("#targetPrompt"),
   controls: document.querySelector(".controls"),
   selectionBar: document.querySelector("#selectionBar"),
   tabContent: document.querySelector("#tabContent"),
@@ -242,6 +247,7 @@ let nukeSmokes = [];
 let impactSmokes = [];
 let shotEffects = [];
 let flightEffects = [];
+const flightSfxStops = new Map();
 let captureEffects = [];
 let toastTimer = null;
 let eventBannerTimer = null;
@@ -271,13 +277,13 @@ let reconnectAttempts = 0;
 let heartbeatTimer = null;
 let serverFull = false;
 const SFX_NAMES = [
-  "attack", "drone", "drone_run", "d_house", "d_tehnika", "fail", "kreyser", "money", "osechka", "Pikap", "pvo", "rain", "raketa", "REB",
+  "attack", "drone", "drone_run", "d_house", "d_tehnika", "fail", "kreyser", "money", "osechka", "pikap", "pvo", "rain", "raketa", "reb",
   "rpg", "rszo", "rszo_hit", "rszo_shot", "shahed", "soyuz", "stroyka", "tank", "tank_shot", "war", "win", "yaderka"
 ];
 const POSITIONAL_VOLUME_EXEMPT = new Set(["fail", "money", "rain", "shahed", "soyuz", "war", "win", "yaderka"]);
 const SFX_PLAY_LIMIT_MS = {
   drone_run: 2000,
-  Pikap: 2000,
+  pikap: 2000,
   tank: 2000
 };
 const MAX_SFX_OVERLAP_PER_NAME = 8;
@@ -286,7 +292,6 @@ const eventSfxPlayers = {};
 const activeEventSfx = {};
 let rainAmbientPlayer = null;
 let sfxUnlocked = false;
-let lastExplosionSfxAt = 0;
 let lastNukeRequestAt = 0;
 let lastShahedRequestAt = 0;
 let pendingJoinPayload = null;
@@ -816,6 +821,7 @@ function handleServerMessage(message) {
     impactSmokes = [];
     shotEffects = [];
     flightEffects = [];
+    stopAllFlightSfx();
     stopRainAmbientSfx();
     hqRebuildEnds = {};
     unreadChatCount = 0;
@@ -851,6 +857,7 @@ function handleServerMessage(message) {
     impactSmokes = [];
     shotEffects = [];
     flightEffects = [];
+    stopAllFlightSfx();
     stopRainAmbientSfx();
     hqRebuildEnds = {};
     unreadChatCount = 0;
@@ -899,6 +906,7 @@ function handleServerMessage(message) {
 
   if (message.type === "flightCancel") {
     flightEffects = flightEffects.filter((flight) => flight.id !== message.id);
+    stopFlightSfx(message.id);
     refreshMapEffects(250);
   }
 
@@ -926,7 +934,6 @@ function handleServerMessage(message) {
     }
     nukeSmokes = nukeSmokes.slice(-MAX_NUKE_SMOKES_ON_MAP);
     impactSmokes = impactSmokes.slice(-MAX_IMPACT_SMOKES_ON_MAP);
-    playExplosionBatch(message.explosions);
     renderMap();
     const cleanupDelay = Math.max(...message.explosions.map((explosion) => (
       explosion.kind === "nuke"
@@ -941,6 +948,7 @@ function handleServerMessage(message) {
 
   if (message.type === "sfx") {
     if (message.name === "shot") addShotEffect(message);
+    if (message.name === "shahed") return;
     playSfx(message.name, message);
   }
 
@@ -1100,7 +1108,11 @@ function addFlightEffect(detail) {
   };
   if (!Number.isFinite(effect.from.x) || !Number.isFinite(effect.from.y) || !Number.isFinite(effect.to.x) || !Number.isFinite(effect.to.y)) return;
   flightEffects.push(effect);
-  flightEffects = flightEffects.slice(-8);
+  while (flightEffects.length > 8) {
+    const removed = flightEffects.shift();
+    stopFlightSfx(removed?.id);
+  }
+  if (effect.kind === "shahed") startFlightSfx(effect);
   refreshMapEffects(duration);
 }
 
@@ -1475,6 +1487,7 @@ function renderGame() {
   els.game.classList.remove("hidden");
   renderMap();
   renderWorldEventStatus();
+  renderTargetPrompt();
   renderPanels();
   renderMapMovePad();
   renderControls();
@@ -1511,6 +1524,25 @@ function renderWorldEventStatus() {
     <strong>${pendingEvent ? "Внимание приближается" : "Событие"}: ${escapeHtml(event.label)}</strong>
     <span>${Math.max(0, seconds || 0)}с</span>
   `;
+}
+
+function renderTargetPrompt() {
+  if (!els.targetPrompt) return;
+  const text = pendingTargetPromptText();
+  if (!text) {
+    els.targetPrompt.classList.add("hidden");
+    els.targetPrompt.textContent = "";
+    return;
+  }
+  els.targetPrompt.textContent = text;
+  els.targetPrompt.classList.remove("hidden");
+}
+
+function pendingTargetPromptText() {
+  if (!pending) return "";
+  if (pending.action === "nuke") return "ВЫБЕРИ КЛЕТКУ ДЛЯ ЯДЕРНОГО УДАРА";
+  if (pending.action === "shahed") return "ВЫБЕРИ КЛЕТКУ ДЛЯ ЗАПУСКА ШАХЕДА";
+  return "";
 }
 
 function renderMap() {
@@ -1742,7 +1774,11 @@ function appendMapEffects(layer, now, width = state?.width || 34, height = state
     layer.append(node);
   }
 
-  flightEffects = flightEffects.filter((flight) => flight.until > now);
+  flightEffects = flightEffects.filter((flight) => {
+    const active = flight.until > now;
+    if (!active) stopFlightSfx(flight.id);
+    return active;
+  });
   for (const flight of flightEffects) {
     const node = document.createElement("span");
     node.className = `map-flight map-flight--${flight.kind || "flight"}`;
@@ -2109,6 +2145,8 @@ function getControlsRenderKey() {
   const cooldowns = player.cooldowns || {};
   const vassals = myVassals().map((item) => item.id).join(",");
   const hasTck = hasOwnBuilding("tck") ? 1 : 0;
+  const hasFactory = hasOwnBuilding("factory") ? 1 : 0;
+  const hasNuclearPlant = hasOwnBuilding("nuclearPlant") ? 1 : 0;
   const cellPart = cell
     ? [
         cell.x, cell.y, cell.owner || "", cell.terrain,
@@ -2143,7 +2181,9 @@ function getControlsRenderKey() {
     cooldowns.nuke || 0,
     cooldowns.saboteur || 0,
     player.specialOpCooldown || 0,
-    hasTck
+    hasTck,
+    hasFactory,
+    hasNuclearPlant
   ].join("|");
 }
 
@@ -2179,7 +2219,9 @@ function renderMapMovePad() {
 function renderTroopsTab() {
   const buttons = Object.entries(UNIT_DEFS).map(([kind, unit]) => {
     const command = kind === "nuke" ? "nuke" : kind === "saboteur" ? "shahed" : "hire";
-    return commandButton(command, kind, unit.name, unit.cost);
+    const availability = launchCommandAvailability(command);
+    const disabled = availability ? !availability.ready : false;
+    return commandButton(command, kind, unit.name, availability?.hint || unit.cost, { disabled });
   }).join("");
   els.tabContent.innerHTML = `<div class="command-grid">${buttons}</div>`;
 }
@@ -2270,6 +2312,55 @@ function actionUnitAvailable(command, cell, ownUnits = {}) {
   if (command === "detonateSaboteur") return (ownUnits.saboteur || 0) > 0;
   const unit = command === "rpg" ? "rpg" : command === "tank" ? "tank" : command === "rocket" ? "rocket" : command === "mlrs" ? "mlrs" : "";
   return Boolean(unit && controlsCell(cell) && (ownUnits[unit] || 0) > 0);
+}
+
+function launchCommandAvailability(command) {
+  if (command !== "nuke" && command !== "shahed") return null;
+  const player = state?.players?.[me];
+  if (!player || spectator || state?.status !== "running") {
+    return { ready: false, hint: "недоступно", reason: "Запуск сейчас недоступен." };
+  }
+
+  if (command === "nuke") {
+    if (!hasOwnBuilding("nuclearPlant")) {
+      return { ready: false, hint: "нужен ядерный завод", reason: "Для ядерки нужен ядерный завод." };
+    }
+    const cooldown = Math.max(0, Math.ceil(player.cooldowns?.nuke || 0));
+    if (cooldown > 0) {
+      return { ready: false, hint: `кд ${cooldown}с`, reason: `Ядерка перезаряжается: ${cooldown}с.` };
+    }
+    const missing = resourceShortageText(LAUNCH_COSTS.nuke, player.resources);
+    if (missing) {
+      return { ready: false, hint: `не хватает ${missing}`, reason: `Не хватает ресурсов для ядерки: ${missing}.` };
+    }
+    return { ready: true, hint: "готово: выбери цель", reason: "Ядерка готова: выбери клетку на карте." };
+  }
+
+  if (!hasOwnBuilding("factory")) {
+    return { ready: false, hint: "нужен завод", reason: "Для запуска Шахеда нужен завод." };
+  }
+  const cooldown = Math.max(0, Math.ceil(player.cooldowns?.saboteur || 0));
+  if (cooldown > 0) {
+    return { ready: false, hint: `кд ${cooldown}с`, reason: `Шахед готовится: ${cooldown}с.` };
+  }
+  const missing = resourceShortageText(LAUNCH_COSTS.shahed, player.resources);
+  if (missing) {
+    return { ready: false, hint: `не хватает ${missing}`, reason: `Не хватает ресурсов для запуска Шахеда: ${missing}.` };
+  }
+  return { ready: true, hint: "готово: выбери цель", reason: "Шахед готов: выбери клетку на карте." };
+}
+
+function resourceShortageText(cost = {}, resources = {}) {
+  return Object.entries(cost)
+    .map(([key, needed]) => {
+      const current = Math.max(0, Number(resources?.[key] || 0));
+      const missing = Math.max(0, needed - current);
+      if (!missing) return "";
+      const resource = RESOURCE_DEFS.find((item) => item.key === key);
+      return `${resource?.icon || key}${missing}`;
+    })
+    .filter(Boolean)
+    .join(" ");
 }
 
 function actionsDiplomacyHtml({ vassal, hasVassals }) {
@@ -2611,7 +2702,11 @@ function handleModalClick(event) {
     return;
   }
 
-
+  if (event.target.closest("[data-exit-confirm]")) {
+    send({ type: "leaveRoom" }, { priority: true });
+    closeModal();
+    return;
+  }
 
   const step = event.target.closest("[data-resource-step]");
   if (step) {
@@ -2669,7 +2764,7 @@ function handleModalClick(event) {
   if (resourceAction) {
     const targetId = els.modalLayer.querySelector("[data-dev-country]")?.value;
     const action = resourceAction.dataset.devResourceAction || "setResources";
-    const resources = action === "setResources" ? readModalResourceState() : readDevResourceDelta();
+    const resources = action === "setResources" ? readModalResourceState() : readDevResourceChange();
     if (!targetId || !resources) return;
     send({ type: "devResources", code: DEV_CODE, action, targetId, resources }, { priority: true });
     return;
@@ -2681,8 +2776,10 @@ function handleModalClick(event) {
     const eventType = els.modalLayer.querySelector("[data-dev-event]")?.value;
     send({ type: "devResources", code: DEV_CODE, action: cheat.dataset.devCheat, targetId, eventType }, { priority: true });
     if (cheat.dataset.devCheat === "maxResources" || cheat.dataset.devCheat === "maxAllResources") {
-      for (const input of els.modalLayer.querySelectorAll("[data-resource-input]")) {
-        input.value = 999;
+      if (cheat.dataset.devCheat === "maxResources") {
+        for (const input of els.modalLayer.querySelectorAll("[data-resource-input]")) {
+          input.value = 999;
+        }
       }
     } else if (cheat.dataset.devCheat === "zeroResources") {
       for (const input of els.modalLayer.querySelectorAll("[data-resource-input]")) {
@@ -2712,14 +2809,14 @@ function readModalResources() {
   return resources;
 }
 
-function readDevResourceDelta() {
+function readDevResourceChange() {
   const resources = {};
-  for (const input of els.modalLayer.querySelectorAll("[data-dev-resource-delta]")) {
+  for (const input of els.modalLayer.querySelectorAll("[data-dev-resource-change]")) {
     const amount = Math.max(0, Math.floor(Number(input.value || 0)));
-    if (amount > 0) resources[input.dataset.devResourceDelta] = amount;
+    if (amount > 0) resources[input.dataset.devResourceChange] = amount;
   }
   if (!Object.keys(resources).length) {
-    showToast("Укажи delta хотя бы для одного ресурса.");
+    showToast("Укажи сумму хотя бы для одного ресурса.");
     return null;
   }
   return resources;
@@ -2816,7 +2913,7 @@ function openDeveloperPanel(selectedId = null) {
         <div><span>Код</span><strong>активен</strong></div>
         <div><span>События</span><strong>${dev.randomEventsEnabled ? "включены" : "выключены"}</strong></div>
         <div><span>Сейчас</span><strong>${escapeHtml(eventStatus)}</strong></div>
-        <div><span>Cooldown</span><strong>${dev.noCooldowns ? "отключены" : "обычные"}</strong></div>
+        <div><span>Перезарядки</span><strong>${dev.noCooldowns ? "отключены" : "обычные"}</strong></div>
       </div>
 
       <section class="dev-section">
@@ -2837,22 +2934,24 @@ function openDeveloperPanel(selectedId = null) {
 
       <section class="dev-section">
         <div class="dev-section__head">
-          <strong>Ресурсы</strong>
-          <span>exact и delta</span>
+          <strong>Ресурсы выбранной страны</strong>
+          <span>новое значение / изменить на</span>
         </div>
-        <div class="dev-resource-head"><span>ресурс</span><span>exact</span><span>delta</span></div>
+        <div class="dev-resource-head"><span>ресурс</span><span>поставить</span><span>изменить на</span></div>
         <div class="dev-resource-editor">
           ${devResourceRowsHtml(active.resources || {})}
         </div>
         <div class="dev-actions dev-actions--three">
-          <button class="primary" data-dev-resource-action="addResources" type="button">Добавить delta</button>
-          <button data-dev-resource-action="subtractResources" type="button">Снять delta</button>
-          <button data-dev-resource-action="setResources" type="button">Выставить exact</button>
+          <button class="primary" data-dev-resource-action="addResources" type="button">Добавить выбранной</button>
+          <button data-dev-resource-action="subtractResources" type="button">Снять у выбранной</button>
+          <button data-dev-resource-action="setResources" type="button">Поставить выбранной</button>
         </div>
         <div class="dev-actions">
           <button data-dev-cheat="maxResources" type="button">999 выбранной</button>
           <button data-dev-cheat="zeroResources" type="button">0 выбранной</button>
-          <button data-dev-cheat="maxAllResources" type="button">999 всем</button>
+        </div>
+        <div class="dev-actions dev-actions--global">
+          <button data-dev-cheat="maxAllResources" type="button">Глобально: 999 всем странам</button>
         </div>
       </section>
 
@@ -2878,7 +2977,7 @@ function openDeveloperPanel(selectedId = null) {
       <section class="dev-section">
         <div class="dev-section__head">
           <strong>Перезарядки</strong>
-          <span>${dev.hasCooldownSnapshot ? "есть общий snapshot" : "snapshot пуст"}</span>
+          <span>${dev.hasCooldownSnapshot ? "есть сохранение" : "сохранения нет"}</span>
         </div>
         <div class="dev-actions">
           <button data-dev-cheat="clearCooldowns" type="button">Убрать всем</button>
@@ -2909,8 +3008,8 @@ function devResourceRowsHtml(values = {}) {
   return RESOURCE_DEFS.map((resource) => `
     <label class="dev-resource-row">
       <span>${resource.icon} ${resource.label}</span>
-      <input data-resource-input="${resource.key}" inputmode="numeric" min="0" type="number" value="${Math.max(0, Math.floor(values[resource.key] || 0))}" title="Exact">
-      <input data-dev-resource-delta="${resource.key}" inputmode="numeric" min="0" type="number" value="0" title="Delta">
+      <input data-resource-input="${resource.key}" inputmode="numeric" min="0" type="number" value="${Math.max(0, Math.floor(values[resource.key] || 0))}" title="Поставить">
+      <input data-dev-resource-change="${resource.key}" inputmode="numeric" min="0" type="number" value="0" title="Изменить на">
     </label>
   `).join("");
 }
@@ -2963,12 +3062,24 @@ function handleCommand(command, kind, data = {}) {
     return;
   }
   if (command === "nuke") {
+    const availability = launchCommandAvailability("nuke");
+    if (!availability?.ready) {
+      showToast(availability?.reason || "Ядерка сейчас недоступна.");
+      return;
+    }
     pending = { action: "nuke" };
+    showToast(availability.reason);
     renderGame();
     return;
   }
   if (command === "shahed") {
+    const availability = launchCommandAvailability("shahed");
+    if (!availability?.ready) {
+      showToast(availability?.reason || "Шахед сейчас недоступен.");
+      return;
+    }
     pending = { action: "shahed" };
+    showToast(availability.reason);
     renderGame();
     return;
   }
@@ -3763,6 +3874,7 @@ function applySoundPreference() {
 }
 
 function stopAllEventSfx() {
+  stopAllFlightSfx();
   stopNativeSfx();
   for (const players of Object.values(activeEventSfx)) {
     for (const audio of players || []) {
@@ -3773,6 +3885,30 @@ function stopAllEventSfx() {
     }
     players.length = 0;
   }
+}
+
+function startFlightSfx(effect) {
+  stopFlightSfx(effect.id);
+  const stop = playLoopedEventSfx("shahed", {
+    x: effect.from.x,
+    y: effect.from.y,
+    playerId: effect.playerId
+  }, effect.duration + 350);
+  if (stop) flightSfxStops.set(effect.id, stop);
+}
+
+function stopFlightSfx(id) {
+  const stop = flightSfxStops.get(id);
+  if (!stop) return;
+  flightSfxStops.delete(id);
+  stop();
+}
+
+function stopAllFlightSfx() {
+  for (const stop of flightSfxStops.values()) {
+    stop();
+  }
+  flightSfxStops.clear();
 }
 
 function bindMapGestures() {
@@ -3936,14 +4072,17 @@ function resolveSfxName(name, detail = {}) {
       tank: "tank_shot"
     }[detail.weapon] || "";
   }
-  return {
-    alert: "war",
+  const aliases = {
+    alert: "",
     demolish: "d_house",
     diplomacy: "soyuz",
-    hire: "money",
+    hire: "stroyka",
     misfire: "osechka",
-    nuke: "yaderka"
-  }[name] || name;
+    nuke: "yaderka",
+    Pikap: "pikap",
+    REB: "reb"
+  };
+  return Object.prototype.hasOwnProperty.call(aliases, name) ? aliases[name] : name;
 }
 
 function updateEventSfxSources(sfx = {}) {
@@ -4004,6 +4143,46 @@ function playEventSfx(name, detail = {}) {
       cleanup();
     }, limit);
   }
+}
+
+function playLoopedEventSfx(name, detail = {}, duration = SHAHED_FLIGHT_MS) {
+  if (!sfxUnlocked || !sfxEnabled) return null;
+  const src = eventSfxSources[name];
+  if (!src && !nativeSfxAvailable()) return null;
+
+  let stopped = false;
+  let audio = null;
+  let timer = null;
+  const cleanup = () => {
+    if (timer) clearTimeout(timer);
+    if (audio) {
+      audio.pause();
+      audio.currentTime = 0;
+      activeEventSfx[name] = (activeEventSfx[name] || []).filter((item) => item !== audio);
+    } else {
+      stopNativeSfx(name);
+    }
+  };
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    cleanup();
+  };
+
+  if (playNativeSfx(name, detail, true)) {
+    timer = setTimeout(stop, Math.max(500, duration));
+    return stop;
+  }
+
+  if (!src) return null;
+  audio = createEventSfxAudio(name, src);
+  audio.loop = true;
+  audio.volume = sfxVolumeFor(name, detail);
+  activeEventSfx[name] = (activeEventSfx[name] || []).filter((item) => !item.ended && !item.paused);
+  activeEventSfx[name].push(audio);
+  audio.play().catch(stop);
+  timer = setTimeout(stop, Math.max(500, duration));
+  return stop;
 }
 
 function createEventSfxAudio(name, src) {
@@ -4109,27 +4288,6 @@ function cameraViewMetrics() {
     visibleWidth: clamp((wrapRect.width / mapRect.width) * state.width, 1, state.width),
     visibleHeight: clamp((wrapRect.height / mapRect.height) * state.height, 1, state.height)
   };
-}
-
-function playExplosionBatch(batch = []) {
-  if (!batch.length) return;
-  const now = Date.now();
-  if (now - lastExplosionSfxAt < 90) return;
-  lastExplosionSfxAt = now;
-
-  const kinds = new Set(batch.map((explosion) => explosion.kind));
-  if ([...kinds].every((kind) => kind === "epidemic")) return;
-  if (kinds.has("nuke")) {
-    playSfx("explosion", { size: "huge" });
-  } else if (kinds.has("mlrs") || kinds.has("cruiser")) {
-    playSfx("explosion", { size: "medium" });
-  } else if (kinds.has("rocket")) {
-    playSfx("explosion", { size: "big" });
-  } else if (kinds.has("tank")) {
-    playSfx("explosion", { size: "small" });
-  } else {
-    playSfx("explosion", { size: "tiny" });
-  }
 }
 
 function escapeHtml(value) {
