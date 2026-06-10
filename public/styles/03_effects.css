@@ -1,0 +1,700 @@
+.command .unit-icon-text {
+  font-size: 16px;
+}
+
+.toggle .unit-icon-text,
+.stepper output .unit-icon-text {
+  font-size: 14px;
+}
+
+@keyframes construction-pulse {
+  0%, 100% {
+    opacity: 0.45;
+    transform: scale(0.86);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.map-chat-bubble {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 5px);
+  z-index: 32;
+  width: max-content;
+  max-width: 130px;
+  transform: translateX(-50%);
+  padding: 5px 7px;
+  border: 1px solid rgba(32, 32, 32, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 253, 247, 0.97);
+  box-shadow: 0 8px 18px rgba(25, 20, 12, 0.22);
+  color: #1f1f1f;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1.12;
+  text-align: center;
+  pointer-events: none;
+  animation: bubble-rise 3200ms ease forwards;
+}
+
+.map-chat-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 8px;
+  height: 8px;
+  transform: translate(-50%, -4px) rotate(45deg);
+  border-right: 1px solid rgba(32, 32, 32, 0.18);
+  border-bottom: 1px solid rgba(32, 32, 32, 0.18);
+  background: rgba(255, 253, 247, 0.97);
+}
+
+@keyframes bubble-rise {
+  0% { opacity: 0; transform: translate(-50%, 5px); }
+  12%, 78% { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, -6px); }
+}
+
+.map.has-nuke-shock::after {
+  content: "";
+  position: absolute;
+  inset: -18%;
+  z-index: 68;
+  border: 7px solid rgba(255, 246, 205, 0.82);
+  box-shadow:
+    inset 0 0 42px rgba(255, 204, 84, 0.38),
+    0 0 44px rgba(255, 236, 154, 0.42);
+  pointer-events: none;
+  animation: shockwave 1750ms ease-out forwards;
+}
+
+.map-effects {
+  position: absolute;
+  inset: 0;
+  z-index: 82;
+  pointer-events: none;
+  overflow: visible;
+  contain: layout paint;
+}
+
+.map-boom,
+.map-smoke,
+.shot-flash,
+.map-flight {
+  position: absolute;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.map-boom {
+  aspect-ratio: 1;
+  border-radius: 50%;
+  z-index: 20;
+  background:
+    radial-gradient(circle, #fff 0 9%, #ffe85c 12% 28%, #ff7a24 32% 52%, rgba(202, 28, 15, 0.38) 58%, transparent 72%);
+  filter: saturate(1.35) contrast(1.1);
+  animation: mapBoom var(--effect-duration, 900ms) cubic-bezier(.05, .78, .16, 1) forwards;
+}
+
+.map-boom::before,
+.map-boom::after {
+  content: "";
+  position: absolute;
+  inset: 8%;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, rgba(255,255,255,0.95) 0 8%, rgba(255,236,140,0.76) 18%, transparent 58%);
+}
+
+.map-boom::after {
+  inset: 22%;
+  border: 2px solid rgba(255,255,255,0.75);
+  background: transparent;
+  animation: mapBoomRing var(--effect-duration, 900ms) ease-out forwards;
+}
+
+.map-boom--tank {
+  z-index: 35;
+}
+
+.map-boom--rocket {
+  z-index: 42;
+  background:
+    radial-gradient(circle, #fff 0 8%, #ffe164 14% 32%, #ff8128 38% 58%, rgba(185, 30, 22, 0.45) 66%, transparent 78%);
+}
+
+.map-boom--mlrs,
+.map-boom--cruiser {
+  z-index: 44;
+  background:
+    radial-gradient(circle at 36% 34%, #fff 0 6%, #ffd83b 13% 27%, transparent 40%),
+    radial-gradient(circle at 66% 56%, #fff 0 5%, #ff9332 14% 35%, transparent 52%),
+    radial-gradient(circle, rgba(215, 31, 19, 0.35), transparent 70%);
+}
+
+.map-boom--misfire {
+  z-index: 50;
+  background:
+    radial-gradient(circle, rgba(255,255,255,0.95) 0 5%, rgba(255,222,85,0.72) 10% 16%, transparent 34%);
+  filter: saturate(1.7);
+  animation: misfireCore var(--effect-duration, 700ms) ease-out forwards;
+}
+
+.map-boom--misfire::before,
+.map-boom--misfire::after {
+  content: "";
+  position: absolute;
+  inset: auto;
+  left: 50%;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  border: 0;
+  border-radius: 50%;
+  background: #fff1a8;
+  transform: translate(-50%, -50%) scale(0.35);
+  animation: misfireSparks var(--effect-duration, 700ms) cubic-bezier(.06, .7, .18, 1) forwards;
+  animation-delay: inherit;
+}
+
+.map-boom--misfire::after {
+  width: 4px;
+  height: 4px;
+  background: #9be7ff;
+  animation-name: misfireSparksCool;
+}
+
+.map-boom--epidemic {
+  z-index: 66;
+  background: transparent;
+  filter: drop-shadow(0 2px 3px rgba(35, 45, 30, 0.32));
+  animation: epidemicSkull var(--effect-duration, 1500ms) ease-out forwards;
+}
+
+.map-boom--epidemic::before,
+.map-boom--epidemic::after {
+  content: "☠";
+  position: absolute;
+  inset: auto;
+  left: 50%;
+  top: 50%;
+  border: 0;
+  background: transparent;
+  color: rgba(28, 32, 26, 0.88);
+  font-size: clamp(12px, 2vw, 22px);
+  line-height: 1;
+  transform: translate(-50%, -50%);
+  animation: epidemicSkullFloat var(--effect-duration, 1500ms) ease-out forwards;
+  animation-delay: inherit;
+}
+
+.map-boom--epidemic::after {
+  content: "✝";
+  color: rgba(78, 95, 65, 0.72);
+  font-size: clamp(9px, 1.4vw, 16px);
+  animation-name: epidemicSkullSide;
+}
+
+.map-boom--nuke {
+  z-index: 90;
+  background:
+    radial-gradient(circle, rgba(255,255,255,1) 0 7%, rgba(245,255,128,0.96) 11% 24%, rgba(255,207,70,0.92) 31% 46%, rgba(255,103,34,0.76) 55%, rgba(80,80,80,0.36) 68%, transparent 78%);
+  filter: saturate(1.55) contrast(1.18);
+  mix-blend-mode: normal;
+  animation: mapNukeBoom var(--effect-duration, 2600ms) cubic-bezier(.03, .75, .12, 1) forwards;
+}
+
+.map-smoke {
+  z-index: 12;
+  border-radius: 45%;
+  background:
+    radial-gradient(circle at 35% 35%, rgba(35,35,35,0.5), transparent 44%),
+    radial-gradient(circle at 64% 54%, rgba(105,105,105,0.44), transparent 48%),
+    radial-gradient(circle at 48% 72%, rgba(12,12,12,0.34), transparent 50%);
+  filter: blur(2.4px);
+  animation: mapSmoke var(--effect-duration, 1600ms) ease-out forwards;
+}
+
+.map-smoke--nuke {
+  z-index: 76;
+  transform: none;
+  inset: auto;
+  border-radius: 36%;
+  filter: blur(3.2px);
+  animation: mapNukeSmoke var(--effect-duration, 8500ms) ease-out forwards;
+}
+
+.map-smoke--rocket,
+.map-smoke--mlrs,
+.map-smoke--cruiser {
+  z-index: 58;
+  filter: blur(2.1px);
+}
+
+.map-smoke--tank {
+  z-index: 54;
+}
+
+.shot-flash {
+  z-index: 65;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, rgba(255,255,255,0.98) 0 12%, rgba(255,218,88,0.86) 22%, rgba(255,109,34,0.55) 42%, transparent 68%);
+  animation: shotFlash var(--effect-duration, 520ms) ease-out forwards;
+}
+
+.shot-flash--rocket {
+  background:
+    linear-gradient(90deg, transparent, rgba(255,255,255,0.95), rgba(255,134,42,0.65), transparent),
+    radial-gradient(circle, rgba(255,230,110,0.8), transparent 62%);
+}
+
+.shot-flash--mlrs,
+.shot-flash--cruiser {
+  background:
+    radial-gradient(circle at 30% 44%, rgba(255,255,255,0.95) 0 8%, rgba(255,160,44,0.62) 20%, transparent 48%),
+    radial-gradient(circle at 68% 58%, rgba(255,255,255,0.88) 0 7%, rgba(255,101,35,0.58) 22%, transparent 52%);
+}
+
+.shot-flash--rpg {
+  background:
+    radial-gradient(circle, rgba(255,255,255,0.96) 0 10%, rgba(255,190,56,0.72) 24%, rgba(255,94,34,0.5) 42%, transparent 68%);
+}
+
+.map-flight {
+  z-index: 88;
+  left: var(--from-left);
+  top: var(--from-top);
+  width: clamp(20px, 2.8vw, 38px);
+  height: clamp(20px, 2.8vw, 38px);
+  display: grid;
+  place-items: center;
+  filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.28));
+  animation: shahedFlight var(--effect-duration, 17040ms) linear forwards;
+}
+
+.map-flight::before {
+  content: "🛩";
+  display: block;
+  font-size: clamp(18px, 2.5vw, 34px);
+  line-height: 1;
+  transform: rotate(var(--flight-angle, 90deg));
+  transform-origin: 50% 50%;
+}
+
+.map-flight--rocket {
+  z-index: 90;
+  width: clamp(22px, 3vw, 40px);
+  height: clamp(22px, 3vw, 40px);
+}
+
+.map-flight--rocket::before {
+  content: "🚀";
+  position: relative;
+  z-index: 2;
+  font-size: clamp(18px, 2.4vw, 32px);
+  transform: rotate(var(--flight-angle, 90deg));
+}
+
+.map-flight--rocket::after {
+  content: "";
+  position: absolute;
+  left: auto;
+  right: 50%;
+  top: 50%;
+  z-index: 1;
+  width: clamp(32px, 5vw, 72px);
+  height: clamp(10px, 1.4vw, 18px);
+  border-radius: 999px;
+  background:
+    radial-gradient(ellipse at 96% 50%, rgba(255, 240, 180, 0.78), transparent 32%),
+    radial-gradient(ellipse at 56% 50%, rgba(92, 94, 92, 0.38), transparent 74%),
+    linear-gradient(90deg, transparent 0%, rgba(95, 99, 96, 0.16) 35%, rgba(255, 210, 112, 0.5) 100%);
+  filter: blur(2px);
+  opacity: 0.72;
+  transform: translateY(-50%) rotate(var(--flight-path-angle, 0deg));
+  transform-origin: 100% 50%;
+}
+
+.map-flight--nuke {
+  z-index: 92;
+  width: clamp(28px, 3.6vw, 48px);
+  height: clamp(28px, 3.6vw, 48px);
+  filter: drop-shadow(0 4px 5px rgba(0, 0, 0, 0.32));
+}
+
+.map-flight--nuke::before {
+  content: "☢";
+  position: relative;
+  z-index: 2;
+  display: grid;
+  width: 1.2em;
+  height: 1.2em;
+  place-items: center;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff6a8 0 34%, #f2c84d 42% 64%, #313131 68% 100%);
+  color: #161616;
+  font-size: clamp(17px, 2.6vw, 32px);
+  font-weight: 900;
+  transform: rotate(var(--flight-angle, 90deg));
+}
+
+.map-flight--nuke::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 1;
+  width: clamp(14px, 2vw, 26px);
+  height: clamp(48px, 7vw, 92px);
+  border-radius: 50%;
+  background:
+    radial-gradient(ellipse at 50% 18%, rgba(245, 245, 230, 0.62), transparent 38%),
+    radial-gradient(ellipse at 50% 58%, rgba(110, 116, 116, 0.38), transparent 70%);
+  filter: blur(3px);
+  opacity: 0.72;
+  transform: translate(-50%, -6%) rotate(var(--flight-angle, 90deg)) translateY(42%);
+  transform-origin: 50% 0;
+}
+
+@keyframes shockwave {
+  from {
+    opacity: 0.95;
+    transform: scale(0.72);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes mapBoom {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.22);
+  }
+  14% {
+    opacity: 1;
+  }
+  62% {
+    opacity: 0.88;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.72);
+  }
+}
+
+@keyframes mapBoomRing {
+  0% {
+    opacity: 0.95;
+    transform: scale(0.35);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.3);
+  }
+}
+
+@keyframes mapNukeBoom {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.06);
+    filter: brightness(1.8) saturate(1.6);
+  }
+  12% {
+    opacity: 1;
+  }
+  36% {
+    opacity: 0.96;
+    filter: brightness(1.35) saturate(1.45);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.22);
+    filter: brightness(0.85) saturate(0.9);
+  }
+}
+
+@keyframes mapSmoke {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.55) rotate(0deg);
+  }
+  16%, 58% {
+    opacity: 0.78;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.3) rotate(8deg);
+  }
+}
+
+@keyframes mapNukeSmoke {
+  0% {
+    opacity: 0;
+    transform: scale(0.72) rotate(0deg);
+  }
+  10%, 74% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.42) rotate(14deg);
+  }
+}
+
+@keyframes epidemicHaze {
+  from {
+    opacity: 0.58;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0.86;
+    transform: scale(1.015);
+  }
+}
+
+@keyframes epidemicSkull {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.72);
+  }
+  18%, 70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -78%) scale(1.12);
+  }
+}
+
+@keyframes epidemicSkullFloat {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -40%) scale(0.55) rotate(-6deg);
+  }
+  18%, 62% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -120%) scale(1.12) rotate(7deg);
+  }
+}
+
+@keyframes epidemicSkullSide {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -35%) scale(0.4) rotate(6deg);
+  }
+  22%, 58% {
+    opacity: 0.82;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(26%, -105%) scale(0.88) rotate(-12deg);
+  }
+}
+
+@keyframes shotFlash {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.3);
+  }
+  18% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.8);
+  }
+}
+
+@keyframes shahedFlight {
+  0% {
+    left: var(--from-left);
+    top: var(--from-top);
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.76);
+  }
+  4% {
+    opacity: 1;
+  }
+  94% {
+    opacity: 1;
+  }
+  100% {
+    left: var(--to-left);
+    top: var(--to-top);
+    opacity: 0.3;
+    transform: translate(-50%, -50%) scale(1.05);
+  }
+}
+
+@keyframes misfireCore {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.25);
+  }
+  14% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.15);
+  }
+}
+
+@keyframes misfireSparks {
+  0% {
+    opacity: 0;
+    box-shadow:
+      0 0 0 0 rgba(255, 255, 255, 0.95),
+      0 0 0 0 rgba(255, 224, 80, 0.92),
+      0 0 0 0 rgba(255, 145, 48, 0.82),
+      0 0 0 0 rgba(255, 238, 160, 0.9),
+      0 0 0 0 rgba(255, 180, 70, 0.8),
+      0 0 0 0 rgba(255, 245, 190, 0.86);
+    transform: translate(-50%, -50%) scale(0.35);
+  }
+  16% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    box-shadow:
+      -26px -20px 0 -1px rgba(255, 255, 255, 0.0),
+      24px -17px 0 -1px rgba(255, 224, 80, 0.0),
+      -22px 18px 0 -1px rgba(255, 145, 48, 0.0),
+      29px 15px 0 -1px rgba(255, 238, 160, 0.0),
+      2px -30px 0 -1px rgba(255, 180, 70, 0.0),
+      -4px 28px 0 -1px rgba(255, 245, 190, 0.0);
+    transform: translate(-50%, -50%) scale(0.95);
+  }
+}
+
+@keyframes misfireSparksCool {
+  0% {
+    opacity: 0;
+    box-shadow:
+      0 0 0 0 rgba(155, 231, 255, 0.9),
+      0 0 0 0 rgba(255, 255, 255, 0.86),
+      0 0 0 0 rgba(124, 205, 255, 0.74),
+      0 0 0 0 rgba(255, 226, 92, 0.82);
+    transform: translate(-50%, -50%) scale(0.35);
+  }
+  18% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0;
+    box-shadow:
+      -31px 2px 0 -1px rgba(155, 231, 255, 0.0),
+      31px -2px 0 -1px rgba(255, 255, 255, 0.0),
+      14px 27px 0 -1px rgba(124, 205, 255, 0.0),
+      -15px -27px 0 -1px rgba(255, 226, 92, 0.0);
+    transform: translate(-50%, -50%) scale(0.9);
+  }
+}
+
+.hud {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  left: max(10px, env(safe-area-inset-left));
+  right: max(10px, env(safe-area-inset-right));
+  z-index: 28;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.top-tools {
+  display: flex;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.top-tool {
+  display: grid;
+  min-width: var(--tap);
+  width: var(--tap);
+  height: var(--tap);
+  min-height: var(--tap);
+  place-items: center;
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--soft-shadow);
+  font-weight: 900;
+  backdrop-filter: blur(12px);
+}
+
+.top-tool.is-active {
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+.top-tool--danger {
+  color: var(--danger);
+}
+
+.quick-status {
+  display: grid;
+  gap: 6px;
+  width: min(560px, calc(100vw - 86px));
+  min-height: var(--tap);
+  padding: 8px 10px;
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--soft-shadow);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.15;
+  pointer-events: none;
+  backdrop-filter: blur(12px);
+}
+
+.quick-status__resources {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(46px, 1fr));
+  gap: 6px;
+}
+
+.quick-status__resources span {
+  display: grid;
+  min-width: 0;
+  min-height: 24px;
+  place-items: center;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--tab-bg) 78%, transparent);
+  white-space: nowrap;
+}
+
+.quick-status__line {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.quick-status__cooldowns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
+  gap: 4px;
+  color: var(--muted);
+}
+
+.quick-status__cooldowns div {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;

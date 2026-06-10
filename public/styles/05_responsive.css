@@ -1,0 +1,283 @@
+@media (max-width: 560px) {
+  .map-wrap {
+    padding: 88px 8px 86px;
+  }
+
+  .map {
+    flex: 0 0 auto;
+    width: calc(820px * var(--map-zoom, 1));
+    max-width: none;
+    max-height: none;
+    box-shadow: var(--soft-shadow);
+  }
+
+  .cell.is-selected {
+    outline: 2px solid #111;
+  }
+
+  .event-banner {
+    top: 84px;
+    width: min(360px, calc(100vw - 18px));
+    font-size: 11px;
+  }
+
+  .world-event {
+    top: 124px;
+    width: min(330px, calc(100vw - 18px));
+    font-size: 10px;
+  }
+
+  .quick-status {
+    width: min(100%, calc(100vw - 72px));
+    padding: 7px;
+    font-size: 10px;
+  }
+
+  .quick-status__resources {
+    grid-template-columns: repeat(5, minmax(34px, 1fr));
+    gap: 4px;
+  }
+
+  .quick-status__line,
+  .quick-status__cooldowns {
+    display: none;
+  }
+
+  .stats-overlay {
+    padding: 8px;
+  }
+
+  .stats-overlay .stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .map-chat-bubble {
+    max-width: 96px;
+    font-size: 8px;
+  }
+
+  .building {
+    font-size: 5px;
+  }
+
+  .units {
+    font-size: 5px;
+  }
+
+  .controls {
+    gap: 7px;
+    padding-top: 8px;
+  }
+
+  .selection-bar {
+    min-height: 32px;
+    padding: 7px 9px;
+    font-size: 11px;
+  }
+
+  .tab-content {
+    min-height: 0;
+  }
+
+  .command-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .command {
+    min-height: 50px;
+    padding: 7px;
+    font-size: 11px;
+  }
+
+  .command span {
+    font-size: 9px;
+  }
+
+  .tab {
+    min-height: 38px;
+    font-size: 10px;
+  }
+
+  .move-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 0;
+  }
+
+  .stepper,
+  .toggle {
+    min-height: 34px;
+    font-size: 10px;
+  }
+
+  .stepper {
+    grid-template-columns: 28px 1fr 28px;
+  }
+
+  .toggle {
+    padding: 0 5px;
+    min-width: 82px;
+  }
+
+  .toggle input {
+    width: 15px;
+    height: 15px;
+  }
+
+  .map-move-pad {
+    left: max(8px, env(safe-area-inset-left));
+    bottom: calc(var(--controls-height) + 8px);
+    grid-template-columns: repeat(3, 52px);
+    grid-template-rows: repeat(3, 50px);
+    gap: 4px;
+  }
+
+  .map-move-button {
+    width: 52px;
+    height: 50px;
+    font-size: 26px;
+  }
+
+  .chat-drawer,
+  .journal-drawer {
+    top: 58px;
+    right: 8px;
+    bottom: calc(var(--controls-height) + 52px);
+    left: 8px;
+    width: auto;
+  }
+
+  .chat-toggle,
+  .journal-toggle {
+    right: max(8px, env(safe-area-inset-right));
+    bottom: calc(var(--controls-height) + 8px);
+    min-height: 36px;
+  }
+
+  .journal-toggle {
+    bottom: calc(var(--controls-height) + 50px);
+  }
+
+  .map-tools {
+    right: max(8px, env(safe-area-inset-right));
+    bottom: calc(var(--controls-height) + 94px);
+    gap: 5px;
+  }
+
+  .map-tool {
+    width: 38px;
+    height: 38px;
+  }
+
+  .toast {
+    bottom: calc(var(--controls-height) + 12px);
+  }
+}
+
+@media (max-height: 640px) {
+  :root {
+    --controls-height: clamp(164px, 34dvh, 206px);
+  }
+
+  .map {
+    width: calc(min(calc(100vw - 24px), calc((100dvh - var(--controls-height) - 88px) * 1.417)) * var(--map-zoom, 1));
+    max-height: none;
+  }
+
+  .chat-drawer,
+  .journal-drawer {
+    bottom: calc(var(--controls-height) + 52px);
+  }
+
+  .chat-toggle {
+    bottom: calc(var(--controls-height) + 8px);
+  }
+
+  .journal-toggle {
+    bottom: calc(var(--controls-height) + 50px);
+  }
+}
+
+@media (max-width: 560px) and (max-height: 640px) {
+  .map {
+    width: calc(760px * var(--map-zoom, 1));
+    max-width: none;
+    max-height: none;
+  }
+}
+
+@media (min-width: 900px) and (orientation: landscape) {
+  :root {
+    --controls-height: 0px;
+    --controls-width: clamp(340px, 32vw, 430px);
+  }
+
+  .game {
+    grid-template-columns: minmax(0, 1fr) var(--controls-width);
+    grid-template-rows: minmax(0, 1fr);
+    padding-top: 0;
+  }
+
+  .battlefield {
+    min-width: 0;
+  }
+
+  .map-wrap {
+    padding: 78px 18px 28px;
+  }
+
+  .map {
+    width: calc(min(calc(100vw - var(--controls-width) - 42px), calc((100dvh - 106px) * 1.417)) * var(--map-zoom, 1));
+  }
+
+  .controls {
+    border-top: 0;
+    border-left: 1px solid var(--paper-line);
+    box-shadow: -12px 0 30px rgba(24, 32, 38, 0.1);
+    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) 12px;
+  }
+
+  .selection-bar {
+    min-height: 42px;
+    white-space: normal;
+  }
+
+  .command-grid {
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  }
+
+  .command {
+    min-height: 58px;
+  }
+
+  .map-tools,
+  .chat-toggle,
+  .journal-toggle {
+    right: calc(var(--controls-width) + 16px);
+  }
+
+  .map-tools {
+    bottom: 118px;
+  }
+
+  .map-move-pad,
+  .chat-toggle {
+    bottom: 16px;
+  }
+
+  .journal-toggle {
+    bottom: 66px;
+  }
+
+  .chat-drawer,
+  .journal-drawer {
+    right: calc(var(--controls-width) + 16px);
+    bottom: 68px;
+  }
+
+  .toast {
+    left: calc((100vw - var(--controls-width)) / 2);
+    bottom: 18px;
+  }
+}

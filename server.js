@@ -1,7 +1,8 @@
 const http = require("http");
-const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { createStaticHandler } = require("./server/static");
+const BOT_TUNING = require("./server/botTuning");
 
 const PORT = Number(process.env.PORT) || 8080;
 const WIDTH = 34;
@@ -36,13 +37,13 @@ const BOT_IDEOLOGIES = {
 };
 
 const FARMER_CELL_LIMIT = 28;
-const BOT_ECONOMY_MULTIPLIER = 0.78;
+const BOT_ECONOMY_MULTIPLIER = BOT_TUNING.economyMultiplier;
 const SUPPORT_INTERVAL_MS = 45_000;
-const BOT_TURN_INTERVAL_MS = 3_200;
-const BOT_TURN_STAGGER_MS = 2_400;
-const BOT_MOVE_COOLDOWN_MS = 2_400;
-const BOT_MOVE_JITTER_MS = 1_400;
-const BOT_RETRY_COOLDOWN_MS = 2_000;
+const BOT_TURN_INTERVAL_MS = BOT_TUNING.turnIntervalMs;
+const BOT_TURN_STAGGER_MS = BOT_TUNING.turnStaggerMs;
+const BOT_MOVE_COOLDOWN_MS = BOT_TUNING.moveCooldownMs;
+const BOT_MOVE_JITTER_MS = BOT_TUNING.moveJitterMs;
+const BOT_RETRY_COOLDOWN_MS = BOT_TUNING.retryCooldownMs;
 const GAME_LOOP_INTERVAL_MS = 500;
 const INCOME_CHECK_INTERVAL_MS = 1_000;
 const HQ_REBUILD_WINDOW_MS = 100_000;
@@ -326,20 +327,11 @@ process.on("unhandledRejection", (reason) => {
   logServer("unhandledRejection", { error: errorDetails(reason), memory: memoryDetails() });
 });
 
-const mimeTypes = {
-  ".html": "text/html; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".js": "application/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".webmanifest": "application/manifest+json; charset=utf-8",
-  ".wav": "audio/wav",
-  ".mp3": "audio/mpeg",
-  ".ogg": "audio/ogg",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".svg": "image/svg+xml"
-};
+const serveHttp = createStaticHandler({
+  publicDir: PUBLIC_DIR,
+  sfxDir: SFX_DIR,
+  eventSfxAliases: EVENT_SFX_ALIASES
+});
 
 const server = http.createServer((req, res) => {
   try {
@@ -415,140 +407,6 @@ setInterval(() => {
     memory: memoryDetails()
   });
 }, SERVER_STATS_LOG_MS).unref?.();
-
-function serveHttp(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-
-  if (url.pathname === "/api/sfx") {
-    sendJson(res, { sfx: getEventSfxPaths() });
-    return;
-  }
-
-  if (url.pathname.startsWith("/sfx/")) {
-    const file = safePath(SFX_DIR, url.pathname.replace(/^\/sfx\//, ""));
-    serveFile(req, file, res);
-    return;
-  }
-
-  const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
-  const file = safePath(PUBLIC_DIR, pathname);
-  serveFile(req, file, res);
-}
-
-function safePath(root, requestPath) {
-  let decoded;
-  try {
-    decoded = decodeURIComponent(requestPath).replace(/^[/\\]+/, "");
-  } catch (error) {
-    return null;
-  }
-  const resolved = path.resolve(root, decoded);
-  const normalizedRoot = path.resolve(root);
-  const relative = path.relative(normalizedRoot, resolved);
-  return relative && (relative.startsWith("..") || path.isAbsolute(relative)) ? null : resolved;
-}
-
-function serveFile(req, file, res) {
-  if (!file || !fs.existsSync(file)) {
-    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-    res.end("Not found");
-    return;
-  }
-
-  const stat = fs.statSync(file);
-  if (!stat.isFile()) {
-    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-    res.end("Not found");
-    return;
-  }
-
-  const ext = path.extname(file).toLowerCase();
-  const isAudio = [".wav", ".mp3", ".ogg"].includes(ext);
-  const etag = `W/"${stat.size}-${Math.floor(stat.mtimeMs)}"`;
-  const baseHeaders = {
-    "Content-Type": mimeTypes[ext] || "application/octet-stream",
-    "Cache-Control": isAudio ? "public, max-age=86400" : "no-cache",
-    "ETag": etag,
-    "Last-Modified": stat.mtime.toUTCString()
-  };
-
-  if (!req.headers.range && req.headers["if-none-match"] === etag) {
-    res.writeHead(304, baseHeaders);
-    res.end();
-    return;
-  }
-
-  if (isAudio) {
-    baseHeaders["Accept-Ranges"] = "bytes";
-  }
-
-  if (isAudio && req.headers.range) {
-    const range = parseRange(req.headers.range, stat.size);
-    if (!range) {
-      res.writeHead(416, {
-        ...baseHeaders,
-        "Content-Range": `bytes */${stat.size}`
-      });
-      res.end();
-      return;
-    }
-
-    res.writeHead(206, {
-      ...baseHeaders,
-      "Content-Length": range.end - range.start + 1,
-      "Content-Range": `bytes ${range.start}-${range.end}/${stat.size}`
-    });
-    fs.createReadStream(file, { start: range.start, end: range.end }).pipe(res);
-    return;
-  }
-
-  res.writeHead(200, {
-    ...baseHeaders,
-    "Content-Length": stat.size
-  });
-  fs.createReadStream(file).pipe(res);
-}
-
-function parseRange(header, size) {
-  const match = /^bytes=(\d*)-(\d*)$/.exec(header || "");
-  if (!match) return null;
-  let start = match[1] ? Number(match[1]) : 0;
-  let end = match[2] ? Number(match[2]) : size - 1;
-
-  if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
-  if (!match[1] && match[2]) {
-    const suffixLength = Number(match[2]);
-    if (!Number.isInteger(suffixLength) || suffixLength <= 0) return null;
-    start = Math.max(0, size - suffixLength);
-    end = size - 1;
-  }
-
-  end = Math.min(end, size - 1);
-  return start <= end && start >= 0 ? { start, end } : null;
-}
-
-function sendJson(res, body) {
-  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-  res.end(JSON.stringify(body));
-}
-
-function getEventSfxPaths() {
-  const entries = [];
-  try {
-    for (const file of fs.readdirSync(SFX_DIR)) {
-      if (!file.toLowerCase().endsWith(".mp3")) continue;
-      const name = path.basename(file, path.extname(file));
-      entries.push([name, `/sfx/${encodeURIComponent(file)}`]);
-    }
-  } catch (error) {}
-  const paths = Object.fromEntries(entries);
-  for (const [alias, target] of Object.entries(EVENT_SFX_ALIASES)) {
-    if (paths[target] && !paths[alias]) {
-      paths[alias] = paths[target];
-    }
-  }
-  return paths;
-}
 
 function createGameRoom() {
   const room = createFreshGame();
@@ -4624,6 +4482,11 @@ function runBotTurn(playerId) {
     botSayPhrase(playerId, "idle");
   }
 
+  if (playerAtWar(playerId)) {
+    if (tryBotHire(playerId, { emergency: true })) return { changed: true, mapChanged: true };
+    if (tryBotMove(playerId, { emergency: true })) return { changed: true, mapChanged: true };
+  }
+
   if (tryBotBuild(playerId)) return { changed: true, mapChanged: true };
   if (tryBotMobilization(playerId)) return { changed: true, mapChanged: false };
   if (isBotRich(playerId) && tryBotMove(playerId)) return { changed: true, mapChanged: true };
@@ -6337,13 +6200,17 @@ function tryBotMove(playerId, options = {}) {
   const earlyPhase = phase === 'factory';   // нет завода
   const expandPhase = phase === 'expand';   // есть завод, нет золотой шахты
   const preMillitary = phase !== 'military';
-  const minAmmo = options.emergency ? 1 : (preMillitary ? 4 : (underAttack ? 1 : 2));
+  const minAmmo = BOT_TUNING.minMoveAmmo({
+    emergency: options.emergency,
+    preMilitary: preMillitary,
+    underAttack
+  });
   if ((player.resources.ammo || 0) < minAmmo) {
     player.nextBotMove = atWar ? now : now + BOT_RETRY_COOLDOWN_MS + randomInt(0, BOT_MOVE_JITTER_MS);
     return false;
   }
 
-  const MAX_INF = { aggressive: 5, passive: 2, industrial: 3, fisher: 2 };
+  const MAX_INF = BOT_TUNING.maxInfByPersonality;
   const maxInf  = (MAX_INF[player.personality] || 2) + (looterEvent ? 2 : 0);
 
   const sources = allCells(game.map)
@@ -6410,9 +6277,13 @@ function tryBotMove(playerId, options = {}) {
     if (movingUnitCount(moved) <= 0) continue;
 
     // §4.3 Сокращаем отряд если патронов не хватает с учётом резерва
-    const AMMO_RESERVE_MOVE = { aggressive: 3, passive: 5, industrial: 4, fisher: 5 };
     // В начальных фазах держим больший резерв патронов (завод только строится)
-    const ammoReserve = looterEvent ? 0 : (preMillitary ? 5 : (underAttack ? 1 : (AMMO_RESERVE_MOVE[player.personality] || 5)));
+    const ammoReserve = BOT_TUNING.moveAmmoReserve({
+      looterEvent,
+      preMilitary: preMillitary,
+      underAttack,
+      personality: player.personality
+    });
     let ammoCost = movementAmmoCost(moved.inf + moved.rpg + moved.tank * 2 + moved.mlrs * 2, playerId, from);
     while (ammoCost > (player.resources.ammo || 0) - ammoReserve && moved.inf > 0) {
       moved.inf -= 1;

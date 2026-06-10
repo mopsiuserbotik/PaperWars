@@ -1,0 +1,87 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, Roboto, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ink: #182026;
+  --muted: #64706c;
+  --paper: #f4f7f3;
+  --paper-line: #cbd6cf;
+  --control: #ffffff;
+  --panel: rgba(255, 255, 255, 0.9);
+  --panel-solid: #ffffff;
+  --field: #ffffff;
+  --button: #ffffff;
+  --tab-bg: #e9f0ec;
+  --grid-line: rgba(0, 0, 0, 0.045);
+  --battle-bg: #eef3ed;
+  --water: #58afe7;
+  --gold: #f4c84f;
+  --uranium: #63d28b;
+  --bridge: #8f6a45;
+  --danger: #d84444;
+  --ok: #247c54;
+  --accent: #1f6f78;
+  --accent-strong: #123f46;
+  --shadow: 0 16px 36px rgba(24, 32, 38, 0.16);
+  --soft-shadow: 0 6px 18px rgba(24, 32, 38, 0.12);
+  --controls-height: clamp(184px, 28dvh, 246px);
+  --controls-width: 360px;
+  --tap: 44px;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #eef3ef;
+  --muted: #a9b6b0;
+  --paper: #101416;
+  --paper-line: #34413e;
+  --control: #1c2426;
+  --panel: rgba(24, 31, 33, 0.9);
+  --panel-solid: #161d1f;
+  --field: #17191c;
+  --button: #1d2628;
+  --tab-bg: #243033;
+  --grid-line: rgba(255, 255, 255, 0.055);
+  --battle-bg: #111719;
+  --accent: #4fb3bd;
+  --accent-strong: #8bdce1;
+  --shadow: 0 12px 30px rgba(0, 0, 0, 0.38);
+  --soft-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--ink);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  color: inherit;
+}
+
+.app,
+.game,
+.lobby {
+  width: 100vw;
+  height: 100dvh;
+}
+
+.hidden {
+  display: none !important;
+}
+
