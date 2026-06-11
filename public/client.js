@@ -129,7 +129,7 @@ const MOVE_TOGGLE_LABELS = {
   drone: "Дрон",
   pickup: "Пикап"
 };
-const SCRAPPABLE_UNITS = ["inf", "tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "pickup", "boat", "cruiser"];
+const SCRAPPABLE_UNITS = ["inf", "rpg", "tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "pickup", "boat", "cruiser"];
 const STATIC_DEPLOY_UNITS = new Set(["rocket", "aa", "aaPlus", "ew"]);
 const DEV_CODE = "6686";
 
@@ -398,11 +398,12 @@ const EXPLOSION_MS = {
 };
 const SHOT_EFFECT_MS = 520;
 const CAPTURE_EFFECT_MS = 6000;
-const MATCH_RESTORE_GRACE_MS = 45_000;
+const HTTP_KEEPALIVE_INTERVAL_MS = 25_000;
 let CLIENT_TOKEN = "";
 let sfxEnabled = true;
 let heldLobbyMessage = null;
-let heldLobbyTimer = null;
+let heldLobbyNoticeAt = 0;
+let httpKeepAliveTimer = null;
 let allowLobbyAfterRoomClosed = false;
 
 function ensureDynamicUi() {
@@ -478,6 +479,9 @@ function connect() {
   nextSocket.addEventListener("close", () => {
     if (socket !== nextSocket) return;
     stopHeartbeat();
+    if (!hasRunningMatchState()) {
+      stopHttpKeepAlive();
+    }
     if (serverFull) return;
     els.connectionStatus.textContent = "Связь потеряна, переподключение...";
     scheduleReconnect();
@@ -509,11 +513,31 @@ function startHeartbeat() {
   heartbeatTimer = setInterval(() => {
     send({ type: "ping", at: Date.now() }, { silent: true });
   }, 15_000);
+  startHttpKeepAlive();
 }
 
 function stopHeartbeat() {
   clearInterval(heartbeatTimer);
   heartbeatTimer = null;
+}
+
+function startHttpKeepAlive() {
+  if (httpKeepAliveTimer) return;
+  sendHttpKeepAlive();
+  httpKeepAliveTimer = setInterval(sendHttpKeepAlive, HTTP_KEEPALIVE_INTERVAL_MS);
+}
+
+function stopHttpKeepAlive() {
+  clearInterval(httpKeepAliveTimer);
+  httpKeepAliveTimer = null;
+}
+
+function sendHttpKeepAlive() {
+  if (!hasRunningMatchState() && socket?.readyState !== WebSocket.OPEN) return;
+  fetch(`/healthz?client=${encodeURIComponent(CLIENT_TOKEN || "browser")}&t=${Date.now()}`, {
+    cache: "no-store",
+    keepalive: true
+  }).catch(() => {});
 }
 
 function bindUi() {
@@ -809,6 +833,7 @@ function handleServerMessage(message) {
     pendingJoinPayload = null;
     allowLobbyAfterRoomClosed = true;
     clearHeldLobbyMessage();
+    stopHttpKeepAlive();
     lobbyStep = "home";
     showToast(message.message || "Комната удалена.");
     return;
@@ -818,6 +843,7 @@ function handleServerMessage(message) {
     serverFull = true;
     clearTimeout(reconnectTimer);
     stopHeartbeat();
+    stopHttpKeepAlive();
     els.connectionStatus.textContent = message.message || "Сервер заполнен.";
     showToast(message.message || "Сервер заполнен.");
     try {
@@ -839,6 +865,7 @@ function handleServerMessage(message) {
   if (message.type === "lobby") {
     if (shouldHoldLobbyDuringMatchRestore(message)) return;
     allowLobbyAfterRoomClosed = false;
+    stopHttpKeepAlive();
     lobby = message;
     if (!lobbySettings || lobby.players?.[me]?.joined) {
       lobbySettings = normalizeLobbySettings(lobby.settings);
@@ -950,6 +977,11 @@ function handleServerMessage(message) {
     rememberCooldowns();
     noticeDisconnectedOpponent();
     syncAmbientSfx();
+    if (hasRunningMatchState()) {
+      startHttpKeepAlive();
+    } else {
+      stopHttpKeepAlive();
+    }
     scheduleRenderGame();
   }
 
@@ -1064,26 +1096,18 @@ function shouldHoldLobbyDuringMatchRestore(message) {
   if (!emptyLobby) return false;
 
   heldLobbyMessage = message;
-  els.connectionStatus.textContent = "Р’РѕСЃСЃС‚Р°РЅР°РІР»РёРІР°РµРј РјР°С‚С‡...";
-  if (!heldLobbyTimer) {
-    heldLobbyTimer = setTimeout(() => {
-      const lobbyToApply = heldLobbyMessage;
-      clearHeldLobbyMessage();
-      if (hasRunningMatchState() && lobbyToApply) {
-        handleServerMessage({ ...lobbyToApply, _forceLobby: true });
-      }
-    }, MATCH_RESTORE_GRACE_MS);
+  startHttpKeepAlive();
+  els.connectionStatus.textContent = "Восстанавливаем матч...";
+  const now = Date.now();
+  if (now - heldLobbyNoticeAt > 8000) {
+    heldLobbyNoticeAt = now;
+    showToast("Связь с сервером восстанавливается, карта остается на экране.");
   }
-  showToast("РЎРµСЂРІРµСЂ РїРµСЂРµРїРѕРґРєР»СЋС‡Р°РµС‚ РјР°С‚С‡, РєР°СЂС‚Р° РѕСЃС‚Р°РµС‚СЃСЏ РЅР° СЌРєСЂР°РЅРµ.");
   return true;
 }
 
 function clearHeldLobbyMessage() {
   heldLobbyMessage = null;
-  if (heldLobbyTimer) {
-    clearTimeout(heldLobbyTimer);
-    heldLobbyTimer = null;
-  }
 }
 
 function addShotEffect(detail) {
@@ -2786,8 +2810,18 @@ function actionsDiplomacyHtml({ vassal, hasVassals }) {
 function scrapButtonsHtml(units = {}) {
   return SCRAPPABLE_UNITS
     .filter((kind) => (units[kind] || 0) > 0)
-    .map((kind) => commandButton("scrap", kind, `♻ ${unitIconHtml(kind)} ${kind === "inf" ? "Распустить" : "Списать"}`, kind === "inf" ? "1💰 1👤" : (UNIT_DEFS[kind]?.name || kind)))
+    .map((kind) => commandButton("scrap", kind, `♻ ${unitIconHtml(kind)} ${scrapActionLabel(kind)}`, scrapActionHint(kind)))
     .join("");
+}
+
+function scrapActionLabel(kind) {
+  return kind === "inf" || kind === "rpg" ? "Распустить" : "Списать";
+}
+
+function scrapActionHint(kind) {
+  if (kind === "inf") return "1💰 1👤";
+  if (kind === "rpg") return "3💰 1⚙️ 1👤";
+  return UNIT_DEFS[kind]?.name || kind;
 }
 
 function syncMoveOptions(cell, ownUnits = {}) {
@@ -3186,6 +3220,19 @@ function handleModalClick(event) {
       openDeveloperPanel(targetId);
       return;
     }
+    if ((devCheat === "clearTargetCooldowns" || devCheat === "restoreTargetCooldowns") && state?.players?.[targetId]) {
+      state.players[targetId].devNoCooldowns = devCheat === "clearTargetCooldowns";
+      openDeveloperPanel(targetId);
+      return;
+    }
+    if (devCheat === "clearCooldowns" || devCheat === "restoreCooldowns") {
+      const disabled = devCheat === "clearCooldowns";
+      for (const player of Object.values(state?.players || {})) {
+        if (player) player.devNoCooldowns = disabled;
+      }
+      openDeveloperPanel(targetId);
+      return;
+    }
     if (devCheat === "maxResources" || devCheat === "maxAllResources") {
       if (devCheat === "maxResources") {
         for (const input of els.modalLayer.querySelectorAll("[data-resource-input]")) {
@@ -3339,7 +3386,7 @@ function openDeveloperPanel(selectedId = null) {
         <div class="dev-country-card">
           <strong style="color:${escapeHtml(active.colorValue || "var(--ink)")};">${escapeHtml(active.country || active.id || "Страна")}</strong>
           <span>${resourcesLineHtml(active.resources || {})}</span>
-          <span>nuke ${fmt(active.cooldowns?.nuke || 0)}с · saboteur ${fmt(active.cooldowns?.saboteur || 0)}с · power ${fmt(active.stats?.power || 0)} · ${active.devFreeActions ? "все бесплатно" : "обычная экономика"}</span>
+          <span>nuke ${fmt(active.cooldowns?.nuke || 0)}с · saboteur ${fmt(active.cooldowns?.saboteur || 0)}с · power ${fmt(active.stats?.power || 0)} · ${active.devFreeActions ? "все бесплатно" : "обычная экономика"} · ${active.devNoCooldowns ? "без перезарядок" : "кд обычные"}</span>
         </div>
         <div class="dev-actions">
           <button class="${active.devFreeActions ? "" : "primary"}" data-dev-cheat="enableFreeActions" type="button">Все бесплатно ON</button>
@@ -4614,6 +4661,11 @@ function playLoopedEventSfx(name, detail = {}, duration = SHAHED_FLIGHT_MS) {
     stopped = true;
     cleanup();
   };
+
+  if (name === "shahed" && nativeSfxAvailable() && playNativeSfx(name, detail, false)) {
+    timer = setTimeout(stop, Math.max(500, duration));
+    return stop;
+  }
 
   if (playNativeSfx(name, detail, true)) {
     timer = setTimeout(stop, Math.max(500, duration));

@@ -250,7 +250,7 @@ const UNITS = {
 };
 
 const NUCLEAR_COST = { gold: 90, iron: 30, uranium: 20, pop: 3 };
-const SCRAPPABLE_UNITS = ["inf", "tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "pickup", "boat", "cruiser"];
+const SCRAPPABLE_UNITS = ["inf", "rpg", "tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "pickup", "boat", "cruiser"];
 const COOLDOWNS = {
   rpg: 15_000,
   tank: 10_000,
@@ -337,6 +337,15 @@ function roomDetails(room) {
   };
 }
 
+function logShutdown(event, details = {}) {
+  logServer(event, {
+    ...details,
+    clients: clients.size,
+    games: games.size,
+    memory: memoryDetails()
+  });
+}
+
 process.on("uncaughtException", (error) => {
   logServer("uncaughtException", { error: errorDetails(error), memory: memoryDetails() });
   saveGamesNow("uncaughtException");
@@ -348,13 +357,27 @@ process.on("unhandledRejection", (reason) => {
 });
 
 process.on("SIGTERM", () => {
+  logShutdown("shutdownSignal", { signal: "SIGTERM" });
   saveGamesNow("SIGTERM");
   process.exit(0);
 });
 
 process.on("SIGINT", () => {
+  logShutdown("shutdownSignal", { signal: "SIGINT" });
   saveGamesNow("SIGINT");
   process.exit(0);
+});
+
+process.on("beforeExit", (code) => {
+  logShutdown("beforeExit", { code });
+});
+
+process.on("exit", (code) => {
+  try {
+    console.log(`[paperwars] ${new Date().toISOString()} processExit ${JSON.stringify({ code, clients: clients.size, games: games.size, memory: memoryDetails() })}`);
+  } catch (error) {
+    console.log(`[paperwars] ${new Date().toISOString()} processExit`);
+  }
 });
 
 const serveHttp = createStaticHandler({
@@ -1785,11 +1808,15 @@ function handleScrap(client, message) {
 
   ownUnits[unitKind] -= 1;
   const cooldowns = weaponCooldownsFor(cell, client.playerId);
-  if (unitKind === "tank" || unitKind === "rocket" || unitKind === "mlrs" || unitKind === "cruiser") {
+  if (unitKind === "rpg" || unitKind === "tank" || unitKind === "rocket" || unitKind === "mlrs" || unitKind === "cruiser") {
     cooldowns[unitKind] = 0;
   }
 
-  const refund = unitKind === "inf" ? { gold: 1, pop: 1 } : scrapRefund(definition.cost);
+  const refund = unitKind === "inf"
+    ? { gold: 1, pop: 1 }
+    : unitKind === "rpg"
+      ? { ...scrapRefund(definition.cost), pop: 1 }
+      : scrapRefund(definition.cost);
   for (const [resource, amount] of Object.entries(refund)) {
     addResource(player, resource, amount);
   }
@@ -1797,7 +1824,12 @@ function handleScrap(client, message) {
   pruneWeaponCooldowns(cell);
   touchMap();
   emitSfx("d_tehnika", cell.x, cell.y, { playerId: client.playerId });
-  addSystemEvent(`${player.country} ${unitKind === "inf" ? "распускает пехоту" : `списывает технику: ${definition.label}`}. Возврат: ${resourceBundleText(refund)}.`);
+  const actionText = unitKind === "inf"
+    ? "распускает пехоту"
+    : unitKind === "rpg"
+      ? "распускает гранатометчика"
+      : `списывает технику: ${definition.label}`;
+  addSystemEvent(`${player.country} ${actionText}. Возврат: ${resourceBundleText(refund)}.`);
   broadcastState();
 }
 
@@ -1923,7 +1955,7 @@ function handleHire(client, message) {
 
   spend(player, cost);
   ownUnits[kind] += 1;
-  if (kind === "inf") {
+  if (kind === "inf" || kind === "rpg") {
     clearFactoryStrikeIfGuarded(cell, client.playerId);
   }
   if (kind === "saboteur") {
@@ -2346,6 +2378,10 @@ function applySpecialOpResult(playerId, targetId, operation) {
   }
 
   if (operation === "jamWeapons") {
+    if (noCooldownsFor(targetId)) {
+      clearCooldownsForPlayer(targetId);
+      return "Режим разработчика: перезарядки отключены, глушение оружия не ставит кулдауны.";
+    }
     const jamUntil = Date.now() + 30_000;
     forEachCell((cell) => {
       const cooldowns = weaponCooldownsFor(cell, targetId);
@@ -2396,6 +2432,9 @@ function handleDevResources(client, message) {
       game.devCooldownSnapshot = snapshotCooldowns();
     }
     game.devNoCooldowns = true;
+    for (const player of Object.values(game.players)) {
+      if (player) player.devNoCooldowns = true;
+    }
     clearAllCooldowns();
     touchMap();
     sendInfo(client, "Перезарядки отключены.");
@@ -2405,6 +2444,9 @@ function handleDevResources(client, message) {
 
   if (action === "restoreCooldowns") {
     game.devNoCooldowns = false;
+    for (const player of Object.values(game.players)) {
+      if (player) player.devNoCooldowns = false;
+    }
     if (game.devCooldownSnapshot) {
       restoreCooldownSnapshot(game.devCooldownSnapshot);
       game.devCooldownSnapshot = null;
@@ -2525,6 +2567,7 @@ function handleDevResources(client, message) {
     if (!game.devPlayerCooldownSnapshots[targetId]) {
       game.devPlayerCooldownSnapshots[targetId] = snapshotCooldowns(targetId);
     }
+    target.devNoCooldowns = true;
     clearCooldownsForPlayer(targetId);
     touchMap();
       sendInfo(client, `${target.country}: перезарядки убраны.`);
@@ -2533,6 +2576,7 @@ function handleDevResources(client, message) {
   }
 
   if (action === "restoreTargetCooldowns") {
+    target.devNoCooldowns = false;
     const snapshot = game.devPlayerCooldownSnapshots?.[targetId];
     if (snapshot) {
       restoreCooldownSnapshot(snapshot, targetId);
@@ -4418,6 +4462,7 @@ function createPlayer(id) {
     defeated: false,
     vassalOf: null,
     capitulatedAt: 0,
+    devNoCooldowns: false,
     devFreeActions: false,
     devAlwaysMisfire: false,
     lastEco: Date.now(),
@@ -4486,6 +4531,7 @@ function startGame() {
     player.defeated = false;
     player.vassalOf = null;
     player.capitulatedAt = 0;
+    player.devNoCooldowns = false;
     player.devFreeActions = false;
     player.devAlwaysMisfire = false;
     player.lastBotAction = Date.now() - BOT_TURN_INTERVAL_MS + randomInt(0, BOT_TURN_STAGGER_MS);
@@ -4775,7 +4821,7 @@ function gameLoop() {
         }
 
         if (b.type === "factory") {
-          const guarded = (unitsFor(cell, playerId).inf || 0) > 0;
+          const guarded = factoryGuardedByUnits(cell, playerId);
           if (guarded && b.strikeUntil) {
             b.strikeUntil = 0;
             mapChanged = true;
@@ -5490,9 +5536,14 @@ function activeEventType(type) {
   return game.activeEvent?.type === type && Date.now() < (game.activeEvent.endsAt || 0);
 }
 
+function factoryGuardedByUnits(cell, playerId) {
+  const units = unitsFor(cell, playerId);
+  return (units.inf || 0) > 0 || (units.rpg || 0) > 0;
+}
+
 function clearFactoryStrikeIfGuarded(cell, playerId) {
   if (cell?.building?.type !== "factory" || cell.building.owner !== playerId) return false;
-  if (!cell.building.strikeUntil || (unitsFor(cell, playerId).inf || 0) <= 0) return false;
+  if (!cell.building.strikeUntil || !factoryGuardedByUnits(cell, playerId)) return false;
   cell.building.strikeUntil = 0;
   return true;
 }
@@ -7772,6 +7823,7 @@ function serializeState(includeMap = true) {
       hqRebuild: player.hqDestroyed ? hqRebuildSeconds(player, now) : 0,
       defeated: Boolean(player.defeated),
       vassalOf: player.vassalOf || null,
+      devNoCooldowns: Boolean(player.devNoCooldowns),
       devFreeActions: Boolean(player.devFreeActions),
       devAlwaysMisfire: Boolean(player.devAlwaysMisfire),
       ammoCapacity: ammoCapacity(id),
@@ -7817,6 +7869,7 @@ function serializeState(includeMap = true) {
 }
 
 function serializePlayerCooldowns(playerId, now = Date.now()) {
+  if (noCooldownsFor(playerId)) return { nuke: 0, saboteur: 0 };
   const player = game.players[playerId];
   const cooldowns = { ...(player?.cooldowns || {}) };
   cooldowns.nuke = nextNukeCooldownUntil(playerId, now);
@@ -7873,9 +7926,11 @@ function serializeUnits(unitsByPlayer = {}) {
 }
 
 function serializeCellCooldowns(cooldownsByPlayer = {}, now = Date.now()) {
+  if (game.devNoCooldowns) return {};
   const result = {};
   for (const [playerId, cooldowns] of Object.entries(cooldownsByPlayer)) {
     const packed = {};
+    if (noCooldownsFor(playerId)) continue;
     for (const [weapon, until] of Object.entries(cooldowns || {})) {
       if (until > now) packed[weapon] = until;
     }
@@ -8474,13 +8529,13 @@ function nuclearPlantCells(playerId) {
 function readyNuclearPlant(playerId, now = Date.now()) {
   const plants = nuclearPlantCells(playerId);
   if (!plants.length) return null;
-  if (game.devNoCooldowns) return plants[0];
+  if (noCooldownsFor(playerId)) return plants[0];
   return plants.find((cell) => now >= (cell.building.nukeCooldown || 0)) || null;
 }
 
 function nextNukeCooldownUntil(playerId, now = Date.now()) {
   const plants = nuclearPlantCells(playerId);
-  if (!plants.length || game.devNoCooldowns) return 0;
+  if (!plants.length || noCooldownsFor(playerId)) return 0;
   let next = Infinity;
   for (const cell of plants) {
     const until = cell.building.nukeCooldown || 0;
@@ -8491,7 +8546,7 @@ function nextNukeCooldownUntil(playerId, now = Date.now()) {
 }
 
 function setNuclearPlantCooldown(cell, player) {
-  const until = game.devNoCooldowns ? 0 : Date.now() + COOLDOWNS.nuke * cooldownPenalty(player);
+  const until = noCooldownsFor(player?.id) ? 0 : Date.now() + COOLDOWNS.nuke * cooldownPenalty(player);
   if (cell?.building?.type === "nuclearPlant") {
     cell.building.nukeCooldown = until;
   }
@@ -8501,6 +8556,7 @@ function setNuclearPlantCooldown(cell, player) {
 }
 
 function jamNuclearPlants(playerId, until) {
+  if (noCooldownsFor(playerId)) return;
   for (const cell of nuclearPlantCells(playerId)) {
     cell.building.nukeCooldown = Math.max(cell.building.nukeCooldown || 0, until);
   }
@@ -8604,13 +8660,18 @@ function scrapRefund(cost = {}) {
   return refund;
 }
 
+function noCooldownsFor(playerOrId) {
+  const player = typeof playerOrId === "string" ? game.players[playerOrId] : playerOrId;
+  return Boolean(game.devNoCooldowns || player?.devNoCooldowns);
+}
+
 function cooldownReady(player, weapon) {
-  if (game.devNoCooldowns) return true;
+  if (noCooldownsFor(player)) return true;
   return Date.now() >= (player.cooldowns[weapon] || 0);
 }
 
 function setCooldown(player, weapon) {
-  if (game.devNoCooldowns) {
+  if (noCooldownsFor(player)) {
     player.cooldowns[weapon] = 0;
     return;
   }
@@ -8618,12 +8679,12 @@ function setCooldown(player, weapon) {
 }
 
 function weaponCooldownReady(cell, playerId, weapon) {
-  if (game.devNoCooldowns) return true;
+  if (noCooldownsFor(playerId)) return true;
   return Date.now() >= (weaponCooldownsFor(cell, playerId)[weapon] || 0);
 }
 
 function setWeaponCooldown(cell, player, playerId, weapon) {
-  if (game.devNoCooldowns) {
+  if (noCooldownsFor(playerId || player)) {
     weaponCooldownsFor(cell, playerId)[weapon] = 0;
     return;
   }
@@ -8636,6 +8697,9 @@ function cooldownPenalty(player) {
 }
 
 function movedWeaponCooldowns(cell, playerId, moved) {
+  if (noCooldownsFor(playerId)) {
+    return { rpg: 0, tank: 0, mlrs: 0, cruiser: 0 };
+  }
   const cooldowns = weaponCooldownsFor(cell, playerId);
   return {
     rpg: moved.rpg ? cooldowns.rpg || 0 : 0,

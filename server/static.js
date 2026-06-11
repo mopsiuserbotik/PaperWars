@@ -20,6 +20,14 @@ function createStaticHandler({ publicDir, sfxDir, eventSfxAliases = {} }) {
   function serveHttp(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
+    if (url.pathname === "/healthz" || url.pathname === "/health") {
+      res.writeHead(204, {
+        "Cache-Control": "no-store"
+      });
+      res.end();
+      return;
+    }
+
     if (url.pathname === "/api/sfx") {
       sendJson(res, { sfx: getEventSfxPaths(sfxDir, eventSfxAliases) });
       return;
