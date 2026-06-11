@@ -45,6 +45,38 @@ const LAUNCH_COSTS = {
   nuke: { gold: 90, iron: 30, uranium: 20, pop: 3 },
   shahed: { pop: 1, gold: 45, iron: 6, ammo: 4 }
 };
+const BUILDING_COSTS = {
+  hq: { gold: 100 },
+  village: { gold: 5 },
+  city: { gold: 12 },
+  barracks: { gold: 8 },
+  mine: { gold: 10 },
+  minePlus: { gold: 35 },
+  farm: { gold: 5 },
+  port: { gold: 15 },
+  bridge: { gold: 20 },
+  factory: { gold: 30 },
+  ammoDepot: { gold: 5 },
+  bunker: { gold: 22, iron: 8 },
+  hospital: { gold: 13 },
+  tck: { gold: 24 },
+  counterIntel: { gold: 120 },
+  nuclearPlant: { gold: 150 }
+};
+const UNIT_COSTS = {
+  inf: { pop: 1, gold: 2 },
+  rpg: { pop: 1, gold: 6, iron: 1, ammo: 1 },
+  tank: { pop: 2, gold: 18, iron: 8 },
+  rocket: { pop: 1, gold: 28, iron: 12 },
+  aa: { pop: 1, gold: 22, iron: 8 },
+  aaPlus: { pop: 2, gold: 55, iron: 18, uranium: 4 },
+  ew: { gold: 10, iron: 2 },
+  mlrs: { pop: 3, gold: 70, iron: 28 },
+  drone: { gold: 16, iron: 4, ammo: 3 },
+  pickup: { pop: 1, gold: 22, iron: 6, ammo: 2 },
+  boat: { pop: 1, gold: 12, iron: 5 },
+  cruiser: { pop: 2, gold: 55, iron: 24 }
+};
 
 const TERRAIN_NAMES = {
   land: "земля",
@@ -97,7 +129,8 @@ const MOVE_TOGGLE_LABELS = {
   drone: "Дрон",
   pickup: "Пикап"
 };
-const SCRAPPABLE_UNITS = ["tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "pickup", "boat", "cruiser"];
+const SCRAPPABLE_UNITS = ["inf", "tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "pickup", "boat", "cruiser"];
+const STATIC_DEPLOY_UNITS = new Set(["rocket", "aa", "aaPlus", "ew"]);
 const DEV_CODE = "6686";
 
 const IDEOLOGY_DEFS = {
@@ -136,6 +169,24 @@ const LOBBY_BOT_DEFS = {
   anarchists: { name: "Анархисты", info: "агрессия и грабеж" },
   mechanics: { name: "Механики", info: "заводы и техника" },
   rivermen: { name: "Рыбаки", info: "порты и вода" }
+};
+
+const LOBBY_MAP_DEFS = {
+  standard: {
+    name: "Стандарт",
+    info: "Реки, озера и привычная плотность ресурсов.",
+    tags: ["реки", "озера", "баланс"]
+  },
+  islands: {
+    name: "Острова",
+    info: "Вода вокруг, остров 5x5 на страну, уран, золото и железо на каждом острове.",
+    tags: ["5x5", "вода", "доход +"]
+  },
+  noWater: {
+    name: "Без воды",
+    info: "Стандартная суша без рек и озер, ресурсов на карте больше.",
+    tags: ["суша", "без флота", "ресурсы +"]
+  }
 };
 
 const LOBBY_INCOME_DEFS = [
@@ -229,10 +280,10 @@ let lobbyMode = "create";
 let lobbyStep = "home";
 let lobbyFormStep = "room";
 let lobbySettings = null;
+let lobbyMapPreview = "standard";
 let selected = null;
 let pendingMoveSelection = null;
 let activeTab = "troops";
-let activeActionGroup = "troops";
 let pending = null;
 let moveInf = 0;
 let moveRpg = true;
@@ -347,8 +398,12 @@ const EXPLOSION_MS = {
 };
 const SHOT_EFFECT_MS = 520;
 const CAPTURE_EFFECT_MS = 6000;
+const MATCH_RESTORE_GRACE_MS = 45_000;
 let CLIENT_TOKEN = "";
 let sfxEnabled = true;
+let heldLobbyMessage = null;
+let heldLobbyTimer = null;
+let allowLobbyAfterRoomClosed = false;
 
 function ensureDynamicUi() {
   if (!els.soundButton) {
@@ -608,6 +663,17 @@ function bindUi() {
 
   els.lobbySettings?.addEventListener("change", () => {
     lobbySettings = readLobbySettings();
+    const selectedMap = els.lobbySettings?.querySelector("[data-map-preset]:checked")?.value;
+    if (selectedMap) lobbyMapPreview = selectedMap;
+    renderLobbySettings();
+  });
+
+  els.lobbySettings?.addEventListener("click", (event) => {
+    const previewButton = event.target.closest("[data-map-preview]");
+    if (!previewButton) return;
+    lobbySettings = readLobbySettings();
+    lobbyMapPreview = previewButton.dataset.mapPreview || lobbySettings.mapType || "standard";
+    renderLobbySettings();
   });
 
   els.map.addEventListener("click", (event) => {
@@ -671,36 +737,8 @@ function bindUi() {
     }
   });
 
-  els.tabContent.addEventListener("change", (event) => {
-    if (event.target.matches("[data-move-toggle='rpg']")) {
-      moveRpg = event.target.checked;
-      renderGame();
-    }
-    if (event.target.matches("[data-move-toggle='tank']")) {
-      moveTank = event.target.checked;
-      renderGame();
-    }
-    if (event.target.matches("[data-move-toggle='mlrs']")) {
-      moveMlrs = event.target.checked;
-      renderGame();
-    }
-    if (event.target.matches("[data-move-toggle='ew']")) {
-      moveEw = event.target.checked;
-      renderGame();
-    }
-    if (event.target.matches("[data-move-toggle='cruiser']")) {
-      moveCruiser = event.target.checked;
-      renderGame();
-    }
-    if (event.target.matches("[data-move-toggle='drone']")) {
-      moveDrone = event.target.checked;
-      renderGame();
-    }
-    if (event.target.matches("[data-move-toggle='pickup']")) {
-      movePickup = event.target.checked;
-      renderGame();
-    }
-  });
+  els.tabContent.addEventListener("change", handleMoveOptionChange);
+  els.mapMovePad?.addEventListener("change", handleMoveOptionChange);
 
   els.chatOpen.addEventListener("click", () => toggleChat());
   els.journalOpen?.addEventListener("click", () => toggleJournal());
@@ -737,7 +775,8 @@ function bindUi() {
       type: "diplomacy",
       action: button.dataset.diplomacyResponse,
       offerId: button.dataset.offerId,
-      ultimatumId: button.dataset.ultimatumId
+      ultimatumId: button.dataset.ultimatumId,
+      capitulationId: button.dataset.capitulationId
     }, { priority: true });
   });
 
@@ -751,9 +790,25 @@ function bindUi() {
   document.addEventListener("keydown", unlockSfxAudio);
 }
 
+function handleMoveOptionChange(event) {
+  const toggle = event.target.closest("[data-move-toggle]");
+  if (!toggle) return;
+
+  if (toggle.dataset.moveToggle === "rpg") moveRpg = toggle.checked;
+  if (toggle.dataset.moveToggle === "tank") moveTank = toggle.checked;
+  if (toggle.dataset.moveToggle === "mlrs") moveMlrs = toggle.checked;
+  if (toggle.dataset.moveToggle === "ew") moveEw = toggle.checked;
+  if (toggle.dataset.moveToggle === "cruiser") moveCruiser = toggle.checked;
+  if (toggle.dataset.moveToggle === "drone") moveDrone = toggle.checked;
+  if (toggle.dataset.moveToggle === "pickup") movePickup = toggle.checked;
+  renderGame();
+}
+
 function handleServerMessage(message) {
   if (message.type === "roomClosed") {
     pendingJoinPayload = null;
+    allowLobbyAfterRoomClosed = true;
+    clearHeldLobbyMessage();
     lobbyStep = "home";
     showToast(message.message || "Комната удалена.");
     return;
@@ -772,14 +827,18 @@ function handleServerMessage(message) {
   }
 
   if (message.type === "hello") {
-    me = message.playerId;
-    spectator = message.spectator;
+    if (message.playerId || !hasRunningMatchState()) {
+      me = message.playerId;
+      spectator = message.spectator;
+    }
     if (message.sfx) {
       updateEventSfxSources(message.sfx);
     }
   }
 
   if (message.type === "lobby") {
+    if (shouldHoldLobbyDuringMatchRestore(message)) return;
+    allowLobbyAfterRoomClosed = false;
     lobby = message;
     if (!lobbySettings || lobby.players?.[me]?.joined) {
       lobbySettings = normalizeLobbySettings(lobby.settings);
@@ -834,6 +893,7 @@ function handleServerMessage(message) {
   }
 
   if (message.type === "start") {
+    clearHeldLobbyMessage();
     pendingJoinPayload = null;
     selected = null;
     pendingMoveSelection = null;
@@ -868,6 +928,9 @@ function handleServerMessage(message) {
   }
 
   if (message.type === "state") {
+    clearHeldLobbyMessage();
+    allowLobbyAfterRoomClosed = false;
+    pendingJoinPayload = null;
     const previousState = state;
     const previousMap = previousState?.map || null;
     const previousChat = previousState?.chat || [];
@@ -987,6 +1050,39 @@ function handleServerMessage(message) {
 
   if (message.type === "error" || message.type === "info") {
     showToast(message.message);
+  }
+}
+
+function hasRunningMatchState() {
+  return state?.status === "running" && !state?.ended;
+}
+
+function shouldHoldLobbyDuringMatchRestore(message) {
+  if (message?._forceLobby || allowLobbyAfterRoomClosed || !hasRunningMatchState()) return false;
+  const myLobbyPlayer = me ? message.players?.[me] : null;
+  const emptyLobby = !message.created && !myLobbyPlayer?.joined;
+  if (!emptyLobby) return false;
+
+  heldLobbyMessage = message;
+  els.connectionStatus.textContent = "Р’РѕСЃСЃС‚Р°РЅР°РІР»РёРІР°РµРј РјР°С‚С‡...";
+  if (!heldLobbyTimer) {
+    heldLobbyTimer = setTimeout(() => {
+      const lobbyToApply = heldLobbyMessage;
+      clearHeldLobbyMessage();
+      if (hasRunningMatchState() && lobbyToApply) {
+        handleServerMessage({ ...lobbyToApply, _forceLobby: true });
+      }
+    }, MATCH_RESTORE_GRACE_MS);
+  }
+  showToast("РЎРµСЂРІРµСЂ РїРµСЂРµРїРѕРґРєР»СЋС‡Р°РµС‚ РјР°С‚С‡, РєР°СЂС‚Р° РѕСЃС‚Р°РµС‚СЃСЏ РЅР° СЌРєСЂР°РЅРµ.");
+  return true;
+}
+
+function clearHeldLobbyMessage() {
+  heldLobbyMessage = null;
+  if (heldLobbyTimer) {
+    clearTimeout(heldLobbyTimer);
+    heldLobbyTimer = null;
   }
 }
 
@@ -1311,7 +1407,15 @@ function validateLobbyFormStep(step) {
 function renderLobbySettings() {
   if (!els.lobbySettings) return;
   const settings = currentLobbySettings();
+  if (!LOBBY_MAP_DEFS[lobbyMapPreview]) lobbyMapPreview = settings.mapType || "standard";
   els.lobbySettings.innerHTML = `
+    <div class="lobby-settings__section">
+      <strong>Карта</strong>
+      <div class="map-preset-list">
+        ${Object.entries(LOBBY_MAP_DEFS).map(([id, preset]) => mapPresetHtml(id, preset, settings)).join("")}
+      </div>
+      ${mapPreviewHtml(lobbyMapPreview, settings)}
+    </div>
     <div class="lobby-settings__section">
       <strong>Боты на карте</strong>
       <div class="lobby-checks">
@@ -1344,6 +1448,120 @@ function renderLobbySettings() {
       </div>
     </div>
   `;
+}
+
+function mapPresetHtml(id, preset, settings) {
+  const selected = settings.mapType === id;
+  const previewed = lobbyMapPreview === id;
+  return `
+    <div class="map-preset ${selected ? "is-selected" : ""} ${previewed ? "is-previewed" : ""}">
+      <label>
+        <input data-map-preset name="lobbyMapType" type="radio" value="${escapeHtml(id)}" ${selected ? "checked" : ""}>
+        <span class="map-preset__body">
+          <strong>${escapeHtml(preset.name)}</strong>
+          <em>${escapeHtml(preset.info)}</em>
+          <span class="map-preset__tags">
+            ${preset.tags.map((tag) => `<b>${escapeHtml(tag)}</b>`).join("")}
+          </span>
+        </span>
+      </label>
+      <button class="map-preset__eye" data-map-preview="${escapeHtml(id)}" type="button" title="Просмотреть карту" aria-label="Просмотреть карту ${escapeHtml(preset.name)}">👁</button>
+    </div>
+  `;
+}
+
+function mapPreviewHtml(mapType, settings) {
+  const preset = LOBBY_MAP_DEFS[mapType] || LOBBY_MAP_DEFS.standard;
+  const cells = lobbyMapPreviewCells(mapType, settings);
+  return `
+    <div class="map-preview" style="--preview-cols:34" aria-label="Предпросмотр карты ${escapeHtml(preset.name)}">
+      <div class="map-preview__head">
+        <strong>${escapeHtml(preset.name)}</strong>
+        <span>${escapeHtml(previewPlayerCountLabel(settings))}</span>
+      </div>
+      <div class="map-preview__grid">
+        ${cells.map((terrain) => `<span class="map-preview__cell map-preview__cell--${terrain}"></span>`).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function lobbyMapPreviewCells(mapType, settings) {
+  const width = 34;
+  const height = 24;
+  const cells = Array.from({ length: width * height }, () => mapType === "islands" ? "water" : "land");
+  const set = (x, y, terrain) => {
+    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    cells[y * width + x] = terrain;
+  };
+
+  if (mapType === "islands") {
+    for (const start of previewStartLayouts(previewPlayerCount(settings), width, height)) {
+      for (let y = start.y - 2; y <= start.y + 2; y += 1) {
+        for (let x = start.x - 2; x <= start.x + 2; x += 1) {
+          set(x, y, "land");
+        }
+      }
+      set(start.x, start.y, "hq");
+      set(start.x - 2, start.y - 2, "gold");
+      set(start.x + 2, start.y - 2, "iron");
+      set(start.x - 2, start.y + 2, "uranium");
+      set(start.x + 2, start.y + 2, "gold");
+    }
+    return cells;
+  }
+
+  if (mapType === "standard") {
+    for (let y = 0; y < height; y += 1) {
+      const x = Math.round(width / 2 + Math.sin(y * 0.8) * 1.6);
+      set(x, y, "water");
+      if (y % 4 === 0) set(x + 1, y, "water");
+    }
+    for (let x = 0; x < width; x += 1) {
+      const y = Math.round(height / 2 + Math.sin(x * 0.65) * 1.1);
+      set(x, y, "water");
+    }
+  }
+
+  const resourceSeeds = mapType === "noWater"
+    ? [
+        [4, 4, "gold"], [8, 7, "iron"], [12, 3, "uranium"], [18, 6, "gold"], [23, 4, "iron"], [29, 8, "gold"],
+        [5, 18, "iron"], [10, 15, "gold"], [15, 20, "uranium"], [21, 17, "iron"], [26, 19, "gold"], [30, 14, "iron"]
+      ]
+    : [
+        [4, 4, "gold"], [8, 7, "iron"], [13, 5, "uranium"], [24, 4, "gold"], [29, 8, "iron"],
+        [6, 18, "iron"], [11, 15, "gold"], [21, 17, "uranium"], [27, 19, "gold"]
+      ];
+  for (const [x, y, terrain] of resourceSeeds) set(x, y, terrain);
+  for (const start of previewStartLayouts(previewPlayerCount(settings), width, height)) {
+    set(start.x, start.y, "hq");
+  }
+  return cells;
+}
+
+function previewStartLayouts(count, width, height) {
+  const cx = (width - 1) / 2;
+  const cy = (height - 1) / 2;
+  const radiusX = Math.max(6, width / 2 - 4);
+  const radiusY = Math.max(5, height / 2 - 4);
+  return Array.from({ length: Math.max(1, count) }, (_, index) => {
+    const angle = Math.PI + (index * Math.PI * 2) / Math.max(1, count);
+    return {
+      x: clamp(Math.round(cx + Math.cos(angle) * radiusX), 2, width - 3),
+      y: clamp(Math.round(cy + Math.sin(angle) * radiusY), 2, height - 3)
+    };
+  });
+}
+
+function previewPlayerCount(settings) {
+  const humans = clamp(Math.round(Number(settings.maxHumans) || 2), lobby?.minHumans || 1, lobby?.maxHumanLimit || 7);
+  const bots = Object.values(settings.bots || {}).filter(Boolean).length;
+  return humans + bots;
+}
+
+function previewPlayerCountLabel(settings) {
+  const count = previewPlayerCount(settings);
+  return `${count} ${count === 1 ? "страна" : count < 5 ? "страны" : "стран"}`;
 }
 
 function renderLobbyPlayerSlots() {
@@ -1435,6 +1653,7 @@ function normalizeLobbySettings(raw = {}) {
   const limits = lobbyHumanLimits();
   const settings = {
     maxHumans: clamp(Math.round(Number(raw.maxHumans) || 2), limits.min, limits.max),
+    mapType: LOBBY_MAP_DEFS[raw.mapType] ? raw.mapType : "standard",
     bots: {},
     randomEvents: raw.randomEvents !== false,
     incomeMultipliers: {}
@@ -1455,6 +1674,11 @@ function readLobbySettings() {
   const limits = lobbyHumanLimits();
   if (Number.isFinite(maxHumans)) {
     settings.maxHumans = clamp(Math.round(maxHumans), limits.min, limits.max);
+  }
+  const mapPreset = els.lobbySettings?.querySelector("[data-map-preset]:checked");
+  if (mapPreset && LOBBY_MAP_DEFS[mapPreset.value]) {
+    settings.mapType = mapPreset.value;
+    lobbyMapPreview = mapPreset.value;
   }
   els.lobbySettings?.querySelectorAll("[data-lobby-bot]").forEach((input) => {
     settings.bots[input.dataset.lobbyBot] = input.checked;
@@ -2144,6 +2368,11 @@ function getControlsRenderKey() {
   const resources = player.resources || {};
   const cooldowns = player.cooldowns || {};
   const vassals = myVassals().map((item) => item.id).join(",");
+  const relationPart = Object.entries(state?.relations || {})
+    .filter(([key]) => key.split(":").includes(me))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}:${value}`)
+    .join(",");
   const hasTck = hasOwnBuilding("tck") ? 1 : 0;
   const hasFactory = hasOwnBuilding("factory") ? 1 : 0;
   const hasNuclearPlant = hasOwnBuilding("nuclearPlant") ? 1 : 0;
@@ -2159,7 +2388,6 @@ function getControlsRenderKey() {
     state.status,
     spectator ? 1 : 0,
     activeTab,
-    activeActionGroup,
     pending ? `${pending.action}:${pending.x ?? ""}:${pending.y ?? ""}` : "",
     cellPart,
     moveInf,
@@ -2171,6 +2399,9 @@ function getControlsRenderKey() {
     moveDrone ? 1 : 0,
     movePickup ? 1 : 0,
     player.vassalOf || "",
+    relationPart,
+    player.hqDestroyed ? 1 : 0,
+    player.devFreeActions ? 1 : 0,
     player.mobilization ? 1 : 0,
     vassals,
     resources.gold || 0,
@@ -2209,90 +2440,100 @@ function renderMapMovePad() {
   const ownUnits = cell?.units?.[me] || {};
   if (cell) syncMoveOptions(cell, ownUnits);
   const canMove = state.status === "running" && !spectator && canMoveFromCell(cell, ownUnits);
-  els.mapMovePad.classList.toggle("hidden", !canMove);
-  if (!canMove) return;
+  const mobilizationOn = Boolean(state?.players?.[me]?.mobilization);
+  const canUseTactics = state.status === "running" && !spectator;
+  const troopActions = canUseTactics ? troopActionButtonsHtml(cell, ownUnits, { availableOnly: true, mobilizationOn }) : "";
+  const scrapActions = canUseTactics ? scrapButtonsHtml(ownUnits) : "";
+  const cancelAction = canUseTactics && pending ? commandButton("cancel", "", "× Сброс", "цель") : "";
+  const hasTactics = Boolean(troopActions || scrapActions || cancelAction);
+
+  els.mapMovePad.classList.toggle("hidden", !canMove && !hasTactics);
+  els.mapMovePad.classList.toggle("is-actions-only", !canMove && hasTactics);
+  if (!canMove && !hasTactics) {
+    els.mapMovePad.innerHTML = "";
+    return;
+  }
+
+  els.mapMovePad.innerHTML = `
+    ${canMove ? mapDirectionsHtml() : ""}
+    <div class="map-tactics">
+      ${canMove ? mapMoveOptionsHtml(ownUnits) : ""}
+      ${hasTactics ? `<div class="map-action-grid">${troopActions}${scrapActions}${cancelAction}</div>` : ""}
+    </div>
+  `;
+
   els.mapMovePad.querySelectorAll("button[data-command='moveDir']").forEach((button) => {
     button.disabled = Boolean(pendingMoveSelection);
   });
 }
 
+function mapDirectionsHtml() {
+  return `
+    <div class="map-move-pad__directions">
+      <button class="map-move-button map-move-button--north" data-command="moveDir" data-dx="0" data-dy="-1" type="button" title="Вверх">↑</button>
+      <button class="map-move-button map-move-button--west" data-command="moveDir" data-dx="-1" data-dy="0" type="button" title="Влево">←</button>
+      <button class="map-move-button map-move-button--east" data-command="moveDir" data-dx="1" data-dy="0" type="button" title="Вправо">→</button>
+      <button class="map-move-button map-move-button--south" data-command="moveDir" data-dx="0" data-dy="1" type="button" title="Вниз">↓</button>
+    </div>
+  `;
+}
+
+function mapMoveOptionsHtml(ownUnits = {}) {
+  const toggles = [
+    ["rpg", moveRpg, (ownUnits.rpg || 0) > 0],
+    ["tank", moveTank, (ownUnits.tank || 0) > 0],
+    ["mlrs", moveMlrs, (ownUnits.mlrs || 0) > 0],
+    ["pickup", movePickup, (ownUnits.pickup || 0) > 0],
+    ["ew", moveEw, (ownUnits.ew || 0) > 0 && ((ownUnits.inf || 0) > 0 || (ownUnits.rpg || 0) > 0 || (ownUnits.tank || 0) > 0 || (ownUnits.mlrs || 0) > 0 || (ownUnits.pickup || 0) > 0)],
+    ["cruiser", moveCruiser, (ownUnits.cruiser || 0) > 0],
+    ["drone", moveDrone, (ownUnits.drone || 0) > 0]
+  ].filter(([, , enabled]) => enabled);
+  return `
+    <div class="move-options map-move-options">
+      ${(ownUnits.inf || 0) > 0 ? `<div class="stepper">
+        <button data-command="infMinus" type="button">−</button>
+        <output>${moveInf}${unitIconHtml("inf")}</output>
+        <button data-command="infPlus" type="button">+</button>
+      </div>` : ""}
+      ${toggles.map(([kind, checked, enabled]) => moveToggleHtml(kind, checked, enabled)).join("")}
+    </div>
+  `;
+}
+
 function renderTroopsTab() {
+  const cell = selected ? getCell(selected.x, selected.y) : null;
   const buttons = Object.entries(UNIT_DEFS).map(([kind, unit]) => {
     const command = kind === "nuke" ? "nuke" : kind === "saboteur" ? "shahed" : "hire";
-    const availability = launchCommandAvailability(command);
-    const disabled = availability ? !availability.ready : false;
+    const availability = launchCommandAvailability(command) || hireCommandAvailability(kind, cell);
+    const disabled = !availability.ready;
     return commandButton(command, kind, unit.name, availability?.hint || unit.cost, { disabled });
   }).join("");
   els.tabContent.innerHTML = `<div class="command-grid">${buttons}</div>`;
 }
 
 function renderBuildingsTab() {
-  const buttons = Object.entries(BUILDING_DEFS).map(([kind, building]) => (
-    commandButton("build", kind, `${building.icon} ${building.name}`, `${building.cost} · 1.5с`)
-  )).join("");
-  els.tabContent.innerHTML = `<div class="command-grid">${buttons}</div>`;
+  const cell = selected ? getCell(selected.x, selected.y) : null;
+  const buttons = Object.entries(BUILDING_DEFS).map(([kind, building]) => {
+    const availability = buildingCommandAvailability(kind, cell);
+    return commandButton("build", kind, `${building.icon} ${building.name}`, availability.hint, { disabled: !availability.ready });
+  }).join("");
+  const demolish = demolishCommandAvailability(cell);
+  els.tabContent.innerHTML = `
+    <div class="action-section">
+      <div class="command-grid">${buttons}</div>
+      <div class="command-grid command-grid--danger">
+        ${commandButton("demolish", "", "⌫ Снести", demolish.hint, { disabled: !demolish.ready })}
+      </div>
+    </div>
+  `;
 }
 
 function renderActionsTab() {
-  const cell = selected ? getCell(selected.x, selected.y) : null;
-  const ownUnits = cell?.units?.[me] || {};
-  syncMoveOptions(cell, ownUnits);
   const vassal = isMyCountryVassal();
   const hasVassals = myVassals().length > 0;
-  const mobilizationOn = Boolean(state?.players?.[me]?.mobilization);
-  const groupButtons = `
-    <div class="action-groups">
-      ${actionGroupButton("troops", "⚔ Войска")}
-      ${actionGroupButton("diplomacy", "🤝 Дипломатия")}
-      ${actionGroupButton("buildings", "🏗 Постройки")}
-    </div>
-  `;
-  const actionContent = activeActionGroup === "diplomacy"
-    ? actionsDiplomacyHtml({ vassal, hasVassals })
-    : activeActionGroup === "buildings"
-      ? actionsBuildingsHtml()
-      : actionsTroopsHtml({ cell, ownUnits, mobilizationOn });
   els.tabContent.innerHTML = `
-    <div class="action-strip action-strip--grouped">
-      ${groupButtons}
-      ${actionContent}
-    </div>
-  `;
-}
-
-function actionGroupButton(group, label) {
-  return `<button class="action-group ${activeActionGroup === group ? "is-active" : ""}" data-command="actionGroup" data-kind="${group}" type="button">${label}</button>`;
-}
-
-function actionsTroopsHtml({ cell, ownUnits, mobilizationOn }) {
-  const scrapButtons = scrapButtonsHtml(ownUnits);
-  return `
-    <div class="action-section">
-      <div class="move-options">
-        <div class="stepper">
-          <button data-command="infMinus" type="button">−</button>
-          <output>${moveInf}${unitIconHtml("inf")}</output>
-          <button data-command="infPlus" type="button">+</button>
-        </div>
-        ${moveToggleHtml("rpg", moveRpg, (ownUnits.rpg || 0) > 0)}
-        ${moveToggleHtml("tank", moveTank, (ownUnits.tank || 0) > 0)}
-        ${moveToggleHtml("mlrs", moveMlrs, (ownUnits.mlrs || 0) > 0)}
-        ${moveToggleHtml("pickup", movePickup, (ownUnits.pickup || 0) > 0)}
-        ${moveToggleHtml("ew", moveEw, (ownUnits.ew || 0) > 0 && ((ownUnits.inf || 0) > 0 || (ownUnits.rpg || 0) > 0 || (ownUnits.tank || 0) > 0 || (ownUnits.mlrs || 0) > 0 || (ownUnits.pickup || 0) > 0))}
-        ${moveToggleHtml("cruiser", moveCruiser, (ownUnits.cruiser || 0) > 0)}
-        ${moveToggleHtml("drone", moveDrone, (ownUnits.drone || 0) > 0)}
-      </div>
-      <div class="command-grid">
-        ${actionCommandButton("rpg", cell, ownUnits, `${unitIconHtml("rpg")} РПГ`, "рядом")}
-        ${actionCommandButton("tank", cell, ownUnits, `${unitIconHtml("tank")} Танк`, "рядом")}
-        ${actionCommandButton("rocket", cell, ownUnits, "🚀 Удар", "R5")}
-        ${actionCommandButton("mlrs", cell, ownUnits, `${unitIconHtml("mlrs")} Залп`, "R4")}
-        ${actionCommandButton("cruiser", cell, ownUnits, `${unitIconHtml("cruiser")} Залп`, "линия 3")}
-        ${actionCommandButton("detonateDrone", cell, ownUnits, `${unitIconHtml("drone")} Детонация`, "эта клетка")}
-        ${hasOwnBuilding("tck") ? commandButton("mobilize", "", mobilizationOn ? "📋 Выкл. моб." : "📋 Мобилизация", mobilizationOn ? "включено" : "выключено") : ""}
-        ${commandButton("cancel", "", "× Сброс", "цель")}
-      </div>
-      ${scrapButtons ? `<div class="command-grid">${scrapButtons}</div>` : ""}
+    <div class="action-strip">
+      ${actionsDiplomacyHtml({ vassal, hasVassals })}
     </div>
   `;
 }
@@ -2305,6 +2546,28 @@ function actionCommandButton(command, cell, ownUnits, label, cost) {
   return commandButton(command, "", label, cost, { disabled: !actionUnitAvailable(command, cell, ownUnits) });
 }
 
+function troopActionButtonsHtml(cell, ownUnits = {}, options = {}) {
+  const actions = [
+    ["rpg", `${unitIconHtml("rpg")} РПГ`, "рядом"],
+    ["tank", `${unitIconHtml("tank")} Танк`, "рядом"],
+    ["rocket", "🚀 Удар", "R5"],
+    ["mlrs", `${unitIconHtml("mlrs")} Залп`, "R4"],
+    ["cruiser", `${unitIconHtml("cruiser")} Залп`, "линия 3"],
+    ["detonateDrone", `${unitIconHtml("drone")} Детонация`, "эта клетка"]
+  ];
+  const buttons = actions
+    .map(([command, label, hint]) => {
+      const ready = actionUnitAvailable(command, cell, ownUnits) && actionCommandReady(command, cell);
+      if (options.availableOnly && !ready) return "";
+      return commandButton(command, "", label, hint, { disabled: !ready });
+    })
+    .join("");
+  const mobilize = hasOwnBuilding("tck")
+    ? commandButton("mobilize", "", options.mobilizationOn ? "📋 Выкл. моб." : "📋 Мобилизация", options.mobilizationOn ? "включено" : "выключено")
+    : "";
+  return `${buttons}${mobilize}`;
+}
+
 function actionUnitAvailable(command, cell, ownUnits = {}) {
   if (!cell) return false;
   if (command === "cruiser") return cell.terrain === "water" && (ownUnits.cruiser || 0) > 0;
@@ -2312,6 +2575,11 @@ function actionUnitAvailable(command, cell, ownUnits = {}) {
   if (command === "detonateSaboteur") return (ownUnits.saboteur || 0) > 0;
   const unit = command === "rpg" ? "rpg" : command === "tank" ? "tank" : command === "rocket" ? "rocket" : command === "mlrs" ? "mlrs" : "";
   return Boolean(unit && controlsCell(cell) && (ownUnits[unit] || 0) > 0);
+}
+
+function actionCommandReady(command, cell) {
+  if (!["rpg", "tank", "rocket", "mlrs", "cruiser"].includes(command)) return true;
+  return cellWeaponCooldownReady(cell, me, command);
 }
 
 function launchCommandAvailability(command) {
@@ -2329,7 +2597,7 @@ function launchCommandAvailability(command) {
     if (cooldown > 0) {
       return { ready: false, hint: `кд ${cooldown}с`, reason: `Ядерка перезаряжается: ${cooldown}с.` };
     }
-    const missing = resourceShortageText(LAUNCH_COSTS.nuke, player.resources);
+    const missing = player.devFreeActions ? "" : resourceShortageText(LAUNCH_COSTS.nuke, player.resources);
     if (missing) {
       return { ready: false, hint: `не хватает ${missing}`, reason: `Не хватает ресурсов для ядерки: ${missing}.` };
     }
@@ -2343,7 +2611,7 @@ function launchCommandAvailability(command) {
   if (cooldown > 0) {
     return { ready: false, hint: `кд ${cooldown}с`, reason: `Шахед готовится: ${cooldown}с.` };
   }
-  const missing = resourceShortageText(LAUNCH_COSTS.shahed, player.resources);
+  const missing = player.devFreeActions ? "" : resourceShortageText(LAUNCH_COSTS.shahed, player.resources);
   if (missing) {
     return { ready: false, hint: `не хватает ${missing}`, reason: `Не хватает ресурсов для запуска Шахеда: ${missing}.` };
   }
@@ -2363,28 +2631,153 @@ function resourceShortageText(cost = {}, resources = {}) {
     .join(" ");
 }
 
-function actionsDiplomacyHtml({ vassal, hasVassals }) {
-  return `
-    <div class="action-section">
-      <div class="command-grid">
-        ${vassal ? disabledCommandButton("🤝 Союз", "сюзерен") : commandButton("ally", "", "🤝 Союз", "страна")}
-        ${vassal ? disabledCommandButton("⚑ Война", "сюзерен") : commandButton("war", "", "⚑ Война", "страна")}
-        ${vassal ? disabledCommandButton("⚠ Ультиматум", "сюзерен") : commandButton("ultimatum", "", "⚠ Ультиматум", "вассалитет")}
-        ${vassal ? disabledCommandButton("🕊 Освободить", "сюзерен") : (hasVassals ? commandButton("releaseVassal", "", "🕊 Освободить", "вассал") : disabledCommandButton("🕊 Освободить", "нет вассалов"))}
-        ${vassal ? disabledCommandButton("🎁 Передать", "сюзерен") : commandButton("transfer", "", "🎁 Передать", "страна")}
-        ${vassal ? disabledCommandButton("🙏 Запросить", "сюзерен") : commandButton("requestResources", "", "🙏 Запросить", "страна")}
-        ${vassal ? disabledCommandButton("🕶 Спецоперация", "сюзерен") : commandButton("specialOp", "", "🕶 Спецоперация", "страна")}
-        ${commandButton("cancel", "", "× Сброс", "цель")}
-      </div>
-    </div>
-  `;
+function costHint(cost = {}, fallback = "") {
+  const text = RESOURCE_DEFS
+    .filter((resource) => cost[resource.key] > 0)
+    .map((resource) => `${resource.icon}${cost[resource.key]}`)
+    .join(" ");
+  return text || fallback;
 }
 
-function actionsBuildingsHtml() {
+function canPayClient(cost = {}) {
+  if (state?.players?.[me]?.devFreeActions) return true;
+  const resources = state?.players?.[me]?.resources || {};
+  return Object.entries(cost).every(([key, amount]) => (resources[key] || 0) >= amount);
+}
+
+function isLandLikeClient(cell) {
+  return Boolean(cell && (["land", "gold", "iron", "uranium"].includes(cell.terrain) || cell.building?.type === "bridge"));
+}
+
+function hasAdjacentWaterClient(cell) {
+  if (!cell) return false;
+  return [[0, -1], [-1, 0], [1, 0], [0, 1]].some(([dx, dy]) => getCell(cell.x + dx, cell.y + dy)?.terrain === "water");
+}
+
+function hasAdjacentOwnedCellClient(cell) {
+  if (!cell) return false;
+  return [[0, -1], [-1, 0], [1, 0], [0, 1]].some(([dx, dy]) => {
+    const next = getCell(cell.x + dx, cell.y + dy);
+    return next && controlsCell(next) && isLandLikeClient(next);
+  });
+}
+
+function hasAdjacentFriendlyPortClient(cell) {
+  if (!cell) return false;
+  return [[0, -1], [-1, 0], [1, 0], [0, 1]].some(([dx, dy]) => {
+    const next = getCell(cell.x + dx, cell.y + dy);
+    const owner = next?.building?.owner;
+    return next?.building?.type === "port" && owner && (controlsOwner(owner) || relationStatus(owner) === "alliance");
+  });
+}
+
+function anyVesselOnCell(cell) {
+  if (!cell) return false;
+  return Object.values(cell.units || {}).some((units) => (units.boat || 0) > 0 || (units.cruiser || 0) > 0);
+}
+
+function hireCommandAvailability(kind, cell) {
+  const player = state?.players?.[me];
+  if (!player || spectator || state?.status !== "running") {
+    return { ready: false, hint: "недоступно" };
+  }
+  if (kind === "nuke" || kind === "saboteur") return launchCommandAvailability(kind === "nuke" ? "nuke" : "shahed");
+  const definition = UNIT_DEFS[kind];
+  if (!definition) return { ready: false, hint: "нет юнита" };
+  const cost = unitHireCostClient(kind, cell);
+  const missing = resourceShortageText(cost, player.resources);
+  const costText = costHint(cost, definition.cost);
+  const hireHint = player.devFreeActions ? "бесплатно" : costText;
+
+  if (!cell) return { ready: false, hint: "выбери клетку" };
+  if (!canPayClient(cost)) return { ready: false, hint: `не хватает ${missing}` };
+
+  if (kind === "boat" || kind === "cruiser") {
+    if (cell.terrain !== "water" || cell.building) return { ready: false, hint: kind === "cruiser" ? "вода у порта" : "вода у земли" };
+    if (kind === "boat" && !hasAdjacentOwnedCellClient(cell)) return { ready: false, hint: "рядом своя земля" };
+    if (kind === "cruiser" && !hasAdjacentFriendlyPortClient(cell)) return { ready: false, hint: "рядом порт" };
+    if (anyVesselOnCell(cell)) return { ready: false, hint: "вода занята" };
+    return { ready: true, hint: hireHint };
+  }
+
+  if (STATIC_DEPLOY_UNITS.has(kind)) {
+    if (!controlsCell(cell) || !isLandLikeClient(cell) || cell.construction) return { ready: false, hint: "своя проходная клетка" };
+    if (!UNIT_DEFS[kind] || (cell.units?.[me]?.[kind] || 0) > 0) return { ready: false, hint: "уже стоит" };
+    return { ready: true, hint: `${hireHint} · 1.5с` };
+  }
+
+  if (!controlsCell(cell) || !["hq", "barracks", "factory"].includes(cell.building?.type)) {
+    return { ready: false, hint: "HQ/казармы/завод" };
+  }
+  if ((cell.units?.[me]?.[kind] || 0) > 0 && kind !== "inf" && kind !== "drone") {
+    return { ready: false, hint: "уже есть" };
+  }
+  return { ready: true, hint: hireHint };
+}
+
+function unitHireCostClient(kind, cell) {
+  if (kind === "inf" && cell?.building?.type === "barracks" && state?.players?.[me]?.mobilization) {
+    return { pop: 1, gold: 1 };
+  }
+  return UNIT_COSTS[kind] || {};
+}
+
+function buildingCommandAvailability(kind, cell) {
+  const player = state?.players?.[me];
+  const definition = BUILDING_DEFS[kind];
+  const cost = BUILDING_COSTS[kind] || {};
+  const baseHint = `${player?.devFreeActions ? "бесплатно" : costHint(cost, definition?.cost || "")} · 1.5с`;
+  if (!player || spectator || state?.status !== "running") return { ready: false, hint: "недоступно" };
+  if (!cell) return { ready: false, hint: "выбери клетку" };
+  if (cell.building) return { ready: false, hint: "занято" };
+  if (cell.construction) return { ready: false, hint: "строится" };
+  const missing = resourceShortageText(cost, player.resources);
+  if (!canPayClient(cost)) return { ready: false, hint: `не хватает ${missing}` };
+
+  if (kind === "bridge") {
+    if (cell.terrain !== "water") return { ready: false, hint: "только вода" };
+    if (anyVesselOnCell(cell)) return { ready: false, hint: "корабль" };
+    if (!hasAdjacentOwnedCellClient(cell)) return { ready: false, hint: "рядом своя клетка" };
+    return { ready: true, hint: baseHint };
+  }
+
+  if (kind === "hq") {
+    if (!state.players?.[me]?.hqDestroyed) return { ready: false, hint: "штаб жив" };
+    if (!controlsCell(cell) || cell.terrain === "water") return { ready: false, hint: "своя суша" };
+    return { ready: true, hint: baseHint };
+  }
+
+  if (!controlsCell(cell) || !isLandLikeClient(cell)) return { ready: false, hint: "своя земля" };
+  if (kind === "mine" && !["gold", "iron", "uranium"].includes(cell.terrain)) return { ready: false, hint: "ресурсная клетка" };
+  if (kind === "minePlus" && cell.terrain !== "gold") return { ready: false, hint: "только золото" };
+  if (kind === "port" && !hasAdjacentWaterClient(cell)) return { ready: false, hint: "у воды" };
+  if (["gold", "iron", "uranium"].includes(cell.terrain) && kind !== "mine" && kind !== "minePlus") return { ready: false, hint: "только шахта" };
+  return { ready: true, hint: baseHint };
+}
+
+function demolishCommandAvailability(cell) {
+  if (!cell) return { ready: false, hint: "выбери клетку" };
+  if (cell.building?.owner !== me) return { ready: false, hint: "не твоя постройка" };
+  if (cell.building.type === "hq") return { ready: false, hint: "штаб нельзя" };
+  return { ready: true, hint: BUILDING_DEFS[cell.building.type]?.name || "постройка" };
+}
+
+function actionsDiplomacyHtml({ vassal, hasVassals }) {
+  const hasTargets = hasDiplomacyTargets();
+  const hasWars = hasWarTargets();
   return `
     <div class="action-section">
       <div class="command-grid">
-        ${commandButton("demolish", "", "⌫ Снести", "постройка")}
+        ${vassal ? commandButton("revolution", "", "⚑ Революция", "свобода") : disabledCommandButton("⚑ Революция", "только вассал")}
+        ${vassal ? disabledCommandButton("🤝 Союз", "сюзерен") : commandButton("ally", "", "🤝 Союз", hasTargets ? "страна" : "нет целей", { disabled: !hasTargets })}
+        ${vassal ? disabledCommandButton("⚑ Война", "сюзерен") : commandButton("war", "", "⚑ Война", hasTargets ? "страна" : "нет целей", { disabled: !hasTargets })}
+        ${vassal ? disabledCommandButton("⚠ Ультиматум", "сюзерен") : commandButton("ultimatum", "", "⚠ Ультиматум", hasTargets ? "вассалитет" : "нет целей", { disabled: !hasTargets })}
+        ${vassal ? disabledCommandButton("🏳 Капитуляция", "сюзерен") : commandButton("capitulate", "", "🏳 Капитуляция", hasWars ? "страна в войне" : "нет войны", { disabled: !hasWars })}
+        ${vassal ? disabledCommandButton("🕊 Освободить", "сюзерен") : (hasVassals ? commandButton("releaseVassal", "", "🕊 Освободить", "вассал") : disabledCommandButton("🕊 Освободить", "нет вассалов"))}
+        ${vassal ? disabledCommandButton("🎁 Передать", "сюзерен") : commandButton("transfer", "", "🎁 Передать", hasTargets ? "страна" : "нет целей", { disabled: !hasTargets })}
+        ${vassal ? disabledCommandButton("🙏 Запросить", "сюзерен") : commandButton("requestResources", "", "🙏 Запросить", hasTargets ? "страна" : "нет целей", { disabled: !hasTargets })}
+        ${vassal ? disabledCommandButton("🕶 Спецоперация", "сюзерен") : commandButton("specialOp", "", "🕶 Спецоперация", hasTargets ? "страна" : "нет целей", { disabled: !hasTargets })}
+        ${commandButton("cancel", "", "× Сброс", "цель")}
       </div>
     </div>
   `;
@@ -2393,7 +2786,7 @@ function actionsBuildingsHtml() {
 function scrapButtonsHtml(units = {}) {
   return SCRAPPABLE_UNITS
     .filter((kind) => (units[kind] || 0) > 0)
-    .map((kind) => commandButton("scrap", kind, `♻ ${unitIconHtml(kind)} Списать`, UNIT_DEFS[kind]?.name || kind))
+    .map((kind) => commandButton("scrap", kind, `♻ ${unitIconHtml(kind)} ${kind === "inf" ? "Распустить" : "Списать"}`, kind === "inf" ? "1💰 1👤" : (UNIT_DEFS[kind]?.name || kind)))
     .join("");
 }
 
@@ -2581,8 +2974,8 @@ function openResourceBundleModal({ title, submitLabel, targetSelect = false, onS
   els.modalLayer.classList.remove("hidden");
 }
 
-function openCountrySelectModal({ title, submitLabel, onSubmit }) {
-  if (!targetCountryOptionsHtml()) {
+function openCountrySelectModal({ title, submitLabel, onSubmit, optionsHtml = targetCountryOptionsHtml() }) {
+  if (!optionsHtml) {
     showToast("Нет доступных стран.");
     return;
   }
@@ -2593,7 +2986,7 @@ function openCountrySelectModal({ title, submitLabel, onSubmit }) {
         <strong>${escapeHtml(title)}</strong>
         <button data-modal-close type="button">×</button>
       </div>
-      ${countrySelectHtml()}
+      ${countrySelectHtml(optionsHtml)}
       <button class="primary modal-submit" data-country-submit type="button">${escapeHtml(submitLabel)}</button>
     </div>
   `;
@@ -2661,22 +3054,34 @@ function openSpecialOperationModal() {
   els.modalLayer.classList.remove("hidden");
 }
 
-function countrySelectHtml() {
+function countrySelectHtml(optionsHtml = targetCountryOptionsHtml()) {
   return `
     <label class="field">
       <span>Страна</span>
       <select data-country-target>
-        ${targetCountryOptionsHtml()}
+        ${optionsHtml}
       </select>
     </label>
   `;
 }
 
-function targetCountryOptionsHtml() {
+function targetCountryOptionsHtml(predicate = null) {
   return Object.values(state?.players || {})
-    .filter((player) => player && player.id !== me && !player.defeated)
+    .filter((player) => player && player.id !== me && !player.defeated && (!predicate || predicate(player)))
     .map((player) => `<option value="${escapeHtml(player.id)}">${escapeHtml(player.country || player.id)} ${relationLabel(player.id)}</option>`)
     .join("");
+}
+
+function hasDiplomacyTargets() {
+  return Boolean(targetCountryOptionsHtml());
+}
+
+function warTargetOptionsHtml() {
+  return targetCountryOptionsHtml((player) => relationStatus(player.id) === "war");
+}
+
+function hasWarTargets() {
+  return Boolean(warTargetOptionsHtml());
 }
 
 function vassalOptionsHtml() {
@@ -2774,14 +3179,20 @@ function handleModalClick(event) {
   if (cheat) {
     const targetId = els.modalLayer.querySelector("[data-dev-country]")?.value;
     const eventType = els.modalLayer.querySelector("[data-dev-event]")?.value;
-    send({ type: "devResources", code: DEV_CODE, action: cheat.dataset.devCheat, targetId, eventType }, { priority: true });
-    if (cheat.dataset.devCheat === "maxResources" || cheat.dataset.devCheat === "maxAllResources") {
-      if (cheat.dataset.devCheat === "maxResources") {
+    const devCheat = cheat.dataset.devCheat;
+    send({ type: "devResources", code: DEV_CODE, action: devCheat, targetId, eventType }, { priority: true });
+    if ((devCheat === "enableFreeActions" || devCheat === "disableFreeActions") && state?.players?.[targetId]) {
+      state.players[targetId].devFreeActions = devCheat === "enableFreeActions";
+      openDeveloperPanel(targetId);
+      return;
+    }
+    if (devCheat === "maxResources" || devCheat === "maxAllResources") {
+      if (devCheat === "maxResources") {
         for (const input of els.modalLayer.querySelectorAll("[data-resource-input]")) {
           input.value = 999;
         }
       }
-    } else if (cheat.dataset.devCheat === "zeroResources") {
+    } else if (devCheat === "zeroResources") {
       for (const input of els.modalLayer.querySelectorAll("[data-resource-input]")) {
         input.value = 0;
       }
@@ -2928,7 +3339,11 @@ function openDeveloperPanel(selectedId = null) {
         <div class="dev-country-card">
           <strong style="color:${escapeHtml(active.colorValue || "var(--ink)")};">${escapeHtml(active.country || active.id || "Страна")}</strong>
           <span>${resourcesLineHtml(active.resources || {})}</span>
-          <span>nuke ${fmt(active.cooldowns?.nuke || 0)}с · saboteur ${fmt(active.cooldowns?.saboteur || 0)}с · power ${fmt(active.stats?.power || 0)}</span>
+          <span>nuke ${fmt(active.cooldowns?.nuke || 0)}с · saboteur ${fmt(active.cooldowns?.saboteur || 0)}с · power ${fmt(active.stats?.power || 0)} · ${active.devFreeActions ? "все бесплатно" : "обычная экономика"}</span>
+        </div>
+        <div class="dev-actions">
+          <button class="${active.devFreeActions ? "" : "primary"}" data-dev-cheat="enableFreeActions" type="button">Все бесплатно ON</button>
+          <button class="${active.devFreeActions ? "primary" : ""}" data-dev-cheat="disableFreeActions" type="button">Все бесплатно OFF</button>
         </div>
       </section>
 
@@ -3015,12 +3430,6 @@ function devResourceRowsHtml(values = {}) {
 }
 
 function handleCommand(command, kind, data = {}) {
-  if (command === "actionGroup") {
-    activeActionGroup = ["troops", "diplomacy", "buildings"].includes(kind) ? kind : "troops";
-    pending = null;
-    renderGame();
-    return;
-  }
   if (command === "infMinus") {
     moveInf = Math.max(0, moveInf - 1);
     renderGame();
@@ -3107,6 +3516,10 @@ function handleCommand(command, kind, data = {}) {
     send({ type: "action", action: "detonateSaboteur", x: cell.x, y: cell.y }, { priority: true });
     return;
   }
+  if (command === "revolution") {
+    send({ type: "diplomacy", action: "revolution" }, { priority: true });
+    return;
+  }
   if (["ally", "war", "ultimatum", "releaseVassal", "transfer", "requestResources", "specialOp"].includes(command) && isMyCountryVassal()) {
     showToast("Внешние действия вассала идут через сюзерена.");
     return;
@@ -3145,6 +3558,21 @@ function handleCommand(command, kind, data = {}) {
   }
   if (command === "releaseVassal") {
     openVassalSelectModal();
+    return;
+  }
+  if (command === "capitulate") {
+    openCountrySelectModal({
+      title: "Капитуляция",
+      submitLabel: "Сдаться",
+      optionsHtml: warTargetOptionsHtml(),
+      onSubmit(targetId) {
+        send({
+          type: "diplomacy",
+          action: "capitulate",
+          targetId
+        }, { priority: true });
+      }
+    });
     return;
   }
   if (command === "transfer" || command === "requestResources") {
@@ -3472,6 +3900,24 @@ function formatChatTime(value) {
 
 function renderDiplomacyPrompt() {
   if (!state || !me) return;
+  const capitulation = (state.capitulationOffers || []).find((item) => item.to === me);
+  if (capitulation) {
+    const nextKey = `capitulation:${capitulation.id}:${capitulation.from}`;
+    if (nextKey === renderedDiplomacyPromptKey) return;
+    renderedDiplomacyPromptKey = nextKey;
+    const from = state.players?.[capitulation.from];
+    els.diplomacyPrompt.classList.remove("hidden");
+    els.diplomacyPrompt.classList.add("diplomacy-prompt--ultimatum");
+    els.diplomacyPrompt.innerHTML = `
+      <strong>${escapeHtml(from?.country || "Страна")} капитулирует</strong>
+      <div>
+        <button data-diplomacy-response="rejectCapitulation" data-capitulation-id="${escapeHtml(capitulation.id)}" type="button">Продолжить захват</button>
+        <button data-diplomacy-response="acceptCapitulation" data-capitulation-id="${escapeHtml(capitulation.id)}" type="button">Сделать вассалом</button>
+      </div>
+    `;
+    return;
+  }
+
   const resourceRequest = (state.resourceRequests || []).find((item) => item.to === me);
   if (resourceRequest) {
     const nextKey = `resource:${resourceRequest.id}:${resourceRequest.from}:${JSON.stringify(resourceRequest.resources || {})}`;

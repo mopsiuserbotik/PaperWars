@@ -1,4 +1,5 @@
 const http = require("http");
+const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { createStaticHandler, getEventSfxPaths } = require("./server/static");
@@ -10,9 +11,14 @@ const HEIGHT = 24;
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const SFX_DIR = path.join(ROOT, "server", "sfx");
+const STATE_DIR = path.join(ROOT, "server", "state");
+const GAME_SAVE_FILE = process.env.PAPERWARS_SAVE_FILE
+  ? path.resolve(process.env.PAPERWARS_SAVE_FILE)
+  : path.join(STATE_DIR, "games.json");
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MIN_HUMAN_PLAYERS = 1;
 const MAX_HUMAN_PLAYERS = 7;
+const MAP_TYPES = new Set(["standard", "islands", "noWater"]);
 const HUMAN_IDS = Array.from({ length: MAX_HUMAN_PLAYERS }, (_, index) => `p${index + 1}`);
 const BOT_IDS = ["farmers", "anarchists", "mechanics", "rivermen"];
 const PLAYER_IDS = [...HUMAN_IDS, ...BOT_IDS];
@@ -48,6 +54,7 @@ const BOT_MOBILIZATION_TOGGLE_COOLDOWN_MS = 45_000;
 const BOT_DRONE_ACTION_COOLDOWN_MS = 2_800;
 const BOT_DRONE_STACK_LIMIT = 4;
 const BOT_DRONE_TARGET_CLUSTER_LIMIT = 9;
+const CAPITULATION_RETRY_MS = 90_000;
 const GAME_LOOP_INTERVAL_MS = 500;
 const INCOME_CHECK_INTERVAL_MS = 1_000;
 const HQ_REBUILD_WINDOW_MS = 100_000;
@@ -243,7 +250,7 @@ const UNITS = {
 };
 
 const NUCLEAR_COST = { gold: 90, iron: 30, uranium: 20, pop: 3 };
-const SCRAPPABLE_UNITS = ["tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "pickup", "boat", "cruiser"];
+const SCRAPPABLE_UNITS = ["inf", "tank", "rocket", "aa", "aaPlus", "ew", "mlrs", "drone", "pickup", "boat", "cruiser"];
 const COOLDOWNS = {
   rpg: 15_000,
   tank: 10_000,
@@ -279,10 +286,17 @@ const NUKE_ACTION_THROTTLE_MS = 900;
 const LOBBY_CODE_LENGTH = 4;
 const EMPTY_LOBBY_TTL_MS = 30 * 60_000;
 const EMPTY_RUNNING_TTL_MS = 20 * 60_000;
+const GAME_SAVE_VERSION = 1;
+const GAME_SAVE_DEBOUNCE_MS = 5_000;
+const GAME_SAVE_INTERVAL_MS = 30_000;
+const GAME_SAVE_MAX_AGE_MS = 12 * 60 * 60_000;
 
 const clients = new Set();
 const games = new Map();
 let game = null;
+let gameSaveTimer = null;
+let gameSaveInProgress = false;
+let gameSaveDirty = false;
 
 function logServer(event, details = {}) {
   let suffix = "";
@@ -325,10 +339,22 @@ function roomDetails(room) {
 
 process.on("uncaughtException", (error) => {
   logServer("uncaughtException", { error: errorDetails(error), memory: memoryDetails() });
+  saveGamesNow("uncaughtException");
 });
 
 process.on("unhandledRejection", (reason) => {
   logServer("unhandledRejection", { error: errorDetails(reason), memory: memoryDetails() });
+  saveGamesNow("unhandledRejection");
+});
+
+process.on("SIGTERM", () => {
+  saveGamesNow("SIGTERM");
+  process.exit(0);
+});
+
+process.on("SIGINT", () => {
+  saveGamesNow("SIGINT");
+  process.exit(0);
 });
 
 const serveHttp = createStaticHandler({
@@ -372,6 +398,8 @@ server.on("upgrade", (req, socket) => {
   attachWebSocket(socket, req);
 });
 
+restoreSavedGames();
+
 server.listen(PORT, () => {
   console.log(`Paper Wars server: http://localhost:${PORT}`);
   logServer("started", { port: PORT, memory: memoryDetails() });
@@ -412,6 +440,10 @@ setInterval(() => {
   });
 }, SERVER_STATS_LOG_MS).unref?.();
 
+setInterval(() => {
+  saveGamesNow("interval");
+}, GAME_SAVE_INTERVAL_MS).unref?.();
+
 function createGameRoom() {
   const room = createFreshGame();
   room.id = typeof crypto.randomUUID === "function"
@@ -420,7 +452,242 @@ function createGameRoom() {
   room.createdAt = Date.now();
   games.set(room.id, room);
   logServer("roomCreated", { room: roomDetails(room) });
+  scheduleGameSave(true);
   return room;
+}
+
+function scheduleGameSave(soon = false) {
+  gameSaveDirty = true;
+  if (gameSaveTimer) return;
+  const delay = soon ? 0 : GAME_SAVE_DEBOUNCE_MS;
+  gameSaveTimer = setTimeout(() => saveGamesNow("debounced"), delay);
+  gameSaveTimer.unref?.();
+}
+
+function saveGamesNow(reason = "manual") {
+  if (!gameSaveDirty && reason === "interval") return;
+  if (gameSaveInProgress) {
+    gameSaveDirty = true;
+    return;
+  }
+  if (gameSaveTimer) {
+    clearTimeout(gameSaveTimer);
+    gameSaveTimer = null;
+  }
+
+  const rooms = Array.from(games.values()).filter((room) => room?.id && room.status !== "ended" && room.lobbyCreated);
+  if (!rooms.length) {
+    gameSaveDirty = false;
+    try {
+      fs.rmSync(GAME_SAVE_FILE, { force: true });
+    } catch (error) {
+      logServer("gameSaveError", { reason, error: errorDetails(error) });
+    }
+    return;
+  }
+
+  gameSaveInProgress = true;
+  gameSaveDirty = false;
+  try {
+    fs.mkdirSync(path.dirname(GAME_SAVE_FILE), { recursive: true });
+    const payload = {
+      version: GAME_SAVE_VERSION,
+      savedAt: Date.now(),
+      rooms
+    };
+    const tempFile = `${GAME_SAVE_FILE}.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify(payload, gameSaveReplacer), "utf8");
+    fs.renameSync(tempFile, GAME_SAVE_FILE);
+  } catch (error) {
+    gameSaveDirty = true;
+    logServer("gameSaveError", { reason, error: errorDetails(error), memory: memoryDetails() });
+  } finally {
+    gameSaveInProgress = false;
+    if (gameSaveDirty) {
+      scheduleGameSave(false);
+    }
+  }
+}
+
+function gameSaveReplacer(key, value) {
+  if (!key) return value;
+  if (key[0] === "_") return undefined;
+  if (key === "timer" || key === "stateBroadcastTimer" || key === "mapCache" || key === "flatCells" || key === "flatCellsSource") {
+    return undefined;
+  }
+  return value;
+}
+
+function restoreSavedGames() {
+  let payload = null;
+  try {
+    if (!fs.existsSync(GAME_SAVE_FILE)) return;
+    payload = JSON.parse(fs.readFileSync(GAME_SAVE_FILE, "utf8"));
+  } catch (error) {
+    logServer("gameRestoreError", { error: errorDetails(error) });
+    return;
+  }
+
+  const now = Date.now();
+  const savedAt = Number(payload?.savedAt || 0);
+  if (!Array.isArray(payload?.rooms) || payload.version !== GAME_SAVE_VERSION || !savedAt || now - savedAt > GAME_SAVE_MAX_AGE_MS) {
+    logServer("gameRestoreSkipped", { savedAt, ageMs: savedAt ? now - savedAt : null });
+    return;
+  }
+
+  let restored = 0;
+  for (const rawRoom of payload.rooms) {
+    const room = restoreRoom(rawRoom, now);
+    if (!room) continue;
+    games.set(room.id, room);
+    startRoomRuntime(room);
+    restored += 1;
+  }
+  if (restored) {
+    logServer("gamesRestored", { count: restored, savedAt, ageMs: now - savedAt });
+  }
+}
+
+function restoreRoom(rawRoom, now = Date.now()) {
+  if (!rawRoom || typeof rawRoom.id !== "string" || !rawRoom.id) return null;
+  if (!["lobby", "running"].includes(rawRoom.status)) return null;
+  if (rawRoom.status === "running" && (!Array.isArray(rawRoom.map) || !rawRoom.map.length)) return null;
+
+  const room = {
+    ...createFreshGame(),
+    ...rawRoom
+  };
+
+  room.settings = sanitizeLobbySettings(room.settings);
+  room.players = restorePlayers(rawRoom.players || {});
+  room.map = Array.isArray(rawRoom.map) ? rawRoom.map : [];
+  room.relations = rawRoom.relations && typeof rawRoom.relations === "object" ? rawRoom.relations : {};
+  room.diplomacyOffers = Array.isArray(rawRoom.diplomacyOffers) ? rawRoom.diplomacyOffers : [];
+  room.ultimatums = Array.isArray(rawRoom.ultimatums) ? rawRoom.ultimatums : [];
+  room.capitulationOffers = Array.isArray(rawRoom.capitulationOffers) ? rawRoom.capitulationOffers : [];
+  room.resourceRequests = Array.isArray(rawRoom.resourceRequests) ? rawRoom.resourceRequests : [];
+  room.supportDeals = rawRoom.supportDeals && typeof rawRoom.supportDeals === "object" ? rawRoom.supportDeals : {};
+  room.diplomacyCooldowns = rawRoom.diplomacyCooldowns && typeof rawRoom.diplomacyCooldowns === "object" ? rawRoom.diplomacyCooldowns : {};
+  room.capitulationCooldowns = rawRoom.capitulationCooldowns && typeof rawRoom.capitulationCooldowns === "object" ? rawRoom.capitulationCooldowns : {};
+  room.resourceRequestCooldowns = rawRoom.resourceRequestCooldowns && typeof rawRoom.resourceRequestCooldowns === "object" ? rawRoom.resourceRequestCooldowns : {};
+  room.chat = Array.isArray(rawRoom.chat) ? rawRoom.chat.slice(-40) : [];
+  room.journal = Array.isArray(rawRoom.journal) ? rawRoom.journal.slice(-80) : [];
+  room.createdAt = Number(rawRoom.createdAt || now) || now;
+  room.startedAt = rawRoom.startedAt ? Number(rawRoom.startedAt) || now : null;
+  room.ended = null;
+  room.timer = null;
+  room.stateBroadcastTimer = null;
+  room.lastStateBroadcastAt = 0;
+  room.lastGameLoopAt = 0;
+  room.lastSlowLoopLogAt = 0;
+  room.emptySince = 0;
+  room.mapCache = null;
+  room.flatCells = null;
+  room.flatCellsSource = null;
+  room.stateVersion = Number(rawRoom.stateVersion || 0) || 0;
+  room.mapVersion = Number(rawRoom.mapVersion || 0) || 0;
+  room.flightId = Number(rawRoom.flightId || 0) || 0;
+  room.explosionId = Number(rawRoom.explosionId || 0) || 0;
+  room.reportId = Number(rawRoom.reportId || 0) || 0;
+  room.botCursor = Number(rawRoom.botCursor || 0) || 0;
+  room.botTargetMemory = rawRoom.botTargetMemory && typeof rawRoom.botTargetMemory === "object" ? rawRoom.botTargetMemory : {};
+  room.devPlayerCooldownSnapshots = rawRoom.devPlayerCooldownSnapshots && typeof rawRoom.devPlayerCooldownSnapshots === "object" ? rawRoom.devPlayerCooldownSnapshots : {};
+  room.activeShaheds = Array.isArray(rawRoom.activeShaheds)
+    ? rawRoom.activeShaheds.map(({ timer, ...shahed }) => shahed).filter((shahed) => shahed?.id && shahed?.to && shahed?.playerId)
+    : [];
+  room.activeEvent = restoreTimedEvent(rawRoom.activeEvent);
+  room.pendingEvent = restoreTimedEvent(rawRoom.pendingEvent);
+  room.nextRandomEventAt = Number(rawRoom.nextRandomEventAt || 0) || 0;
+  room.nextIncomeCheckAt = Number(rawRoom.nextIncomeCheckAt || now) || now;
+
+  if (room.status === "running") {
+    addDisconnectedRestoreNotice(room);
+  }
+
+  return room;
+}
+
+function restorePlayers(rawPlayers) {
+  const restored = {};
+  for (const id of PLAYER_IDS) {
+    const rawPlayer = rawPlayers?.[id];
+    if (!rawPlayer) continue;
+    const player = {
+      ...createPlayer(id),
+      ...rawPlayer
+    };
+    player.id = id;
+    player.isBot = BOT_IDS.includes(id);
+    player.connected = player.isBot;
+    player.joined = player.isBot ? rawPlayer.joined !== false : Boolean(rawPlayer.joined);
+    player.personality = player.isBot ? (BOT_PROFILES[id]?.personality || player.personality) : (player.personality || "human");
+    player.resources = normalizeSavedResources(rawPlayer.resources);
+    player.cooldowns = {
+      nuke: Number(rawPlayer.cooldowns?.nuke || 0) || 0,
+      saboteur: Number(rawPlayer.cooldowns?.saboteur || 0) || 0
+    };
+    player.scoutReports = rawPlayer.scoutReports && typeof rawPlayer.scoutReports === "object" ? rawPlayer.scoutReports : {};
+    delete player._mapAnalysis;
+    delete player._mapAnalysisVersion;
+    delete player._mapAnalysisEvent;
+    restored[id] = player;
+  }
+  return restored;
+}
+
+function normalizeSavedResources(resources = {}) {
+  const normalized = {};
+  for (const key of RESOURCE_KEYS) {
+    const value = Number(resources?.[key] || 0);
+    normalized[key] = Number.isFinite(value) ? round1(Math.max(0, value)) : 0;
+  }
+  return normalized;
+}
+
+function restoreTimedEvent(event) {
+  if (!event || typeof event !== "object") return null;
+  return { ...event };
+}
+
+function addDisconnectedRestoreNotice(room) {
+  if (!Array.isArray(room.journal)) room.journal = [];
+  const existing = room.journal.some((entry) => entry?.type === "system" && String(entry.text || "").includes("Сервер восстановил матч"));
+  if (existing) return;
+  room.journal.push({
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    type: "system",
+    text: "Сервер восстановил матч после перезапуска. Переподключение игроков ожидается автоматически.",
+    at: Date.now()
+  });
+  room.journal = room.journal.slice(-80);
+  room.journalVersion = Number(room.journalVersion || 0) + 1;
+}
+
+function startRoomRuntime(room) {
+  room.timer = null;
+  room.stateBroadcastTimer = null;
+  room.mapCache = null;
+  room.flatCells = null;
+  room.flatCellsSource = null;
+  if (room.status !== "running") return;
+
+  room.lastGameLoopAt = 0;
+  room.lastStateBroadcastAt = 0;
+  room.timer = setInterval(() => runGameLoop(room), GAME_LOOP_INTERVAL_MS);
+  rearmActiveShaheds(room);
+}
+
+function rearmActiveShaheds(room) {
+  if (!Array.isArray(room?.activeShaheds)) return;
+  const now = Date.now();
+  for (const shahed of room.activeShaheds) {
+    const remaining = Math.max(0, (shahed.startedAt || now) + (shahed.duration || SHAHED_FLIGHT_MS) - now);
+    const tx = shahed.to?.x;
+    const ty = shahed.to?.y;
+    if (!Number.isFinite(tx) || !Number.isFinite(ty)) continue;
+    shahed.timer = setTimeout(() => withGame(room, () => resolveShahedImpact(shahed.playerId, tx, ty, shahed.id)), remaining);
+    shahed.timer.unref?.();
+  }
 }
 
 function withGame(room, callback) {
@@ -685,6 +952,7 @@ function attachClientToGame(client, room, playerId) {
   player.token = client.token || player.token;
   player.ip = client.ip || player.ip;
   room.players[playerId] = player;
+  scheduleGameSave(true);
   return true;
 }
 
@@ -717,6 +985,7 @@ function maybeDisposeGame(room, now = Date.now()) {
     ttlMs: ttl
   });
   games.delete(room.id);
+  saveGamesNow("roomDisposed");
 }
 
 function cleanupEmptyGames(now = Date.now()) {
@@ -746,6 +1015,7 @@ function detachClient(client, reason = "unknown") {
         broadcastState();
       }
     });
+    scheduleGameSave(true);
     maybeDisposeGame(room);
   }
 }
@@ -1190,6 +1460,7 @@ function handleJoin(client, message) {
 
     sendHello(client);
     broadcastLobby();
+    scheduleGameSave(true);
 
     if (lobbyReadyToStart(game)) {
       startGame();
@@ -1281,6 +1552,7 @@ function closeCurrentRoom(message) {
   clearInterval(room.timer);
   room.timer = null;
   games.delete(room.id);
+  saveGamesNow("roomClosed");
 
   for (const client of roomClients) {
     client.gameId = null;
@@ -1331,6 +1603,7 @@ function handleRestart(client) {
     clientItem.lastJournalVersionSent = -1;
   }
 
+  scheduleGameSave(true);
   broadcastLobby();
 }
 
@@ -1350,12 +1623,14 @@ function handleContinueWithBots(client) {
   }
   addSystemEvent(`${game.players[client.playerId].country} продолжает партию против ботов.`, { sound: "diplomacy" });
   recomputePlayerFlags();
+  scheduleGameSave(true);
   broadcastStateNow();
 }
 
 function defaultLobbySettings() {
   return {
     maxHumans: 2,
+    mapType: "standard",
     bots: Object.fromEntries(BOT_IDS.map((id) => [id, true])),
     randomEvents: true,
     incomeMultipliers: { ...LOBBY_INCOME_DEFAULTS }
@@ -1374,6 +1649,7 @@ function sanitizeLobbySettings(raw = {}) {
   const defaults = defaultLobbySettings();
   const settings = {
     maxHumans: sanitizeHumanCount(raw.maxHumans ?? defaults.maxHumans),
+    mapType: MAP_TYPES.has(raw.mapType) ? raw.mapType : defaults.mapType,
     bots: { ...defaults.bots },
     randomEvents: raw.randomEvents !== false,
     incomeMultipliers: { ...defaults.incomeMultipliers }
@@ -1492,13 +1768,13 @@ function handleScrap(client, message) {
   const definition = UNITS[unitKind];
 
   if (!cell || !definition || !SCRAPPABLE_UNITS.includes(unitKind)) {
-    sendError(client, "Выбери свою технику для списания.");
+    sendError(client, "Выбери свою пехоту или технику для списания.");
     return;
   }
 
   const ownUnits = unitsFor(cell, client.playerId);
   if ((ownUnits[unitKind] || 0) <= 0) {
-    sendError(client, "На выбранной клетке нет такой твоей техники.");
+    sendError(client, "На выбранной клетке нет такой твоей пехоты или техники.");
     return;
   }
 
@@ -1513,7 +1789,7 @@ function handleScrap(client, message) {
     cooldowns[unitKind] = 0;
   }
 
-  const refund = scrapRefund(definition.cost);
+  const refund = unitKind === "inf" ? { gold: 1, pop: 1 } : scrapRefund(definition.cost);
   for (const [resource, amount] of Object.entries(refund)) {
     addResource(player, resource, amount);
   }
@@ -1521,7 +1797,7 @@ function handleScrap(client, message) {
   pruneWeaponCooldowns(cell);
   touchMap();
   emitSfx("d_tehnika", cell.x, cell.y, { playerId: client.playerId });
-  addSystemEvent(`${player.country} списывает технику: ${definition.label}. Возврат: ${resourceBundleText(refund)}.`);
+  addSystemEvent(`${player.country} ${unitKind === "inf" ? "распускает пехоту" : `списывает технику: ${definition.label}`}. Возврат: ${resourceBundleText(refund)}.`);
   broadcastState();
 }
 
@@ -1776,11 +2052,6 @@ function handleDiplomacy(client, message) {
     return;
   }
 
-  if (player?.vassalOf) {
-    sendError(client, "Вассал не ведет самостоятельную дипломатию. Войны и союзы задает сюзерен.");
-    return;
-  }
-
   if (action === "acceptAlliance" || action === "rejectAlliance") {
     const offerId = cleanText(message.offerId, 80);
     const offer = game.diplomacyOffers.find((item) => item.id === offerId && item.to === playerId);
@@ -1819,6 +2090,23 @@ function handleDiplomacy(client, message) {
     return;
   }
 
+  if (action === "acceptCapitulation" || action === "rejectCapitulation") {
+    resolveCapitulationOffer(playerId, cleanText(message.capitulationId, 80), action === "acceptCapitulation");
+    broadcastState();
+    return;
+  }
+
+  if (action === "revolution") {
+    revoltVassal(playerId);
+    broadcastState();
+    return;
+  }
+
+  if (player?.vassalOf) {
+    sendError(client, "Вассал не ведет самостоятельную дипломатию. Войны и союзы задает сюзерен.");
+    return;
+  }
+
   if (!PLAYER_IDS.includes(targetId) || targetId === playerId || isDefeated(targetId)) {
     sendError(client, "Выбери действующую страну.");
     return;
@@ -1842,6 +2130,12 @@ function handleDiplomacy(client, message) {
 
   if (action === "releaseVassal") {
     releaseVassal(playerId, targetId);
+    broadcastState();
+    return;
+  }
+
+  if (action === "capitulate") {
+    requestCapitulation(playerId, targetId);
     broadcastState();
     return;
   }
@@ -2194,6 +2488,17 @@ function handleDevResources(client, message) {
     return;
   }
 
+  if (action === "enableFreeActions" || action === "disableFreeActions") {
+    if (!target || !PLAYER_IDS.includes(targetId)) {
+      sendError(client, "Выбери страну на карте.");
+      return;
+    }
+    target.devFreeActions = action === "enableFreeActions";
+    sendInfo(client, `${target.country}: все бесплатно ${target.devFreeActions ? "включено" : "выключено"}.`);
+    broadcastStateNow();
+    return;
+  }
+
   if (action === "maxAllResources") {
     for (const id of PLAYER_IDS) {
       if (game.players[id]) setResourcesExact(game.players[id], Object.fromEntries(RESOURCE_KEYS.map((key) => [key, 999])));
@@ -2307,18 +2612,6 @@ function handleResourceTransfer(fromId, toId, resources) {
   transferResourceBundle(from, to, resources);
   addSystemEvent(`${from.country} передает ${to.country}: ${resourceBundleText(resources)}.`, { sound: resourceTransferSound(resources) });
 
-  if (to.vassalOf === fromId) {
-    const available = capResourceBundleToPlayer(to, resources);
-    if (resourceBundleEmpty(available)) {
-      sendError(playerClient(fromId), "У вассала нет запрошенных ресурсов.");
-      return;
-    }
-    transferResourceBundle(to, from, available);
-    addSystemEvent(`${to.country} автоматически отправляет сюзерену ${from.country}: ${resourceBundleText(available)}.`, { sound: resourceTransferSound(available) });
-    broadcastState();
-    return;
-  }
-
   if (to.isBot) {
     activateBotSupport(toId, fromId, resources);
   }
@@ -2336,6 +2629,18 @@ function handleResourceRequest(fromId, toId, resources) {
 
   if (resourceBundleEmpty(resources)) {
     sendError(playerClient(fromId), "Запрашивать ноль ресурсов бессмысленно.");
+    return;
+  }
+
+  if (to.vassalOf === fromId) {
+    const available = capResourceBundleToPlayer(to, resources);
+    if (resourceBundleEmpty(available)) {
+      sendError(playerClient(fromId), "У вассала нет запрошенных ресурсов.");
+      return;
+    }
+    transferResourceBundle(to, from, available);
+    addSystemEvent(`${to.country} автоматически отправляет сюзерену ${from.country}: ${resourceBundleText(available)}.`, { sound: resourceTransferSound(available) });
+    broadcastState();
     return;
   }
 
@@ -2792,6 +3097,84 @@ function botAcceptsUltimatum(fromId, toId) {
   return false;
 }
 
+function requestCapitulation(fromId, toId) {
+  const from = game.players[fromId];
+  const to = game.players[toId];
+  if (!from || !to || from.defeated || to.defeated || fromId === toId) {
+    sendError(playerClient(fromId), "Выбери действующую страну.");
+    return false;
+  }
+  if (relationStatus(fromId, toId) !== "war") {
+    sendError(playerClient(fromId), "Капитулировать можно только стране, с которой идет война.");
+    return false;
+  }
+
+  if (to.isBot) {
+    forceVassalage(fromId, toId, `${from.country} капитулирует и становится вассалом ${to.country}.`);
+    return true;
+  }
+
+  const key = pairKey(fromId, toId);
+  const now = Date.now();
+  game.capitulationCooldowns = game.capitulationCooldowns || {};
+  if ((game.capitulationCooldowns?.[key] || 0) > now) return false;
+  game.capitulationOffers = (game.capitulationOffers || []).filter((offer) => !(offer.from === fromId && offer.to === toId));
+  game.capitulationOffers.push({
+    id: `${now}-${Math.random().toString(16).slice(2)}`,
+    from: fromId,
+    to: toId,
+    at: now
+  });
+  addSystemEvent(`${from.country} предлагает капитуляцию стране ${to.country}.`, { sound: "diplomacy" });
+  return true;
+}
+
+function resolveCapitulationOffer(playerId, offerId, accepted) {
+  const offer = (game.capitulationOffers || []).find((item) => item.id === offerId && item.to === playerId);
+  const receiver = game.players[playerId];
+  if (!offer || !receiver || receiver.defeated) {
+    sendError(playerClient(playerId), "Капитуляция уже неактуальна.");
+    return false;
+  }
+
+  const from = game.players[offer.from];
+  game.capitulationOffers = game.capitulationOffers.filter((item) => item.id !== offer.id);
+  if (!from || from.defeated || relationStatus(offer.from, playerId) !== "war") {
+    sendError(playerClient(playerId), "Капитуляция уже неактуальна.");
+    return false;
+  }
+
+  if (accepted) {
+    return forceVassalage(offer.from, playerId, `${from.country} капитулирует и становится вассалом ${receiver.country}.`);
+  }
+
+  game.capitulationCooldowns = game.capitulationCooldowns || {};
+  game.capitulationCooldowns[pairKey(offer.from, playerId)] = Date.now() + CAPITULATION_RETRY_MS;
+  addSystemEvent(`${receiver.country} продолжает захват страны ${from.country}.`, { sound: "alert" });
+  return true;
+}
+
+function revoltVassal(playerId) {
+  const player = game.players[playerId];
+  const overlordId = player?.vassalOf;
+  const overlord = game.players[overlordId];
+  if (!player || !overlordId || !overlord || player.defeated || overlord.defeated) {
+    sendError(playerClient(playerId), "Революция доступна только действующему вассалу.");
+    return false;
+  }
+
+  player.vassalOf = null;
+  player.capitulatedAt = 0;
+  game.diplomacyOffers = game.diplomacyOffers.filter((offer) => offer.from !== playerId && offer.to !== playerId);
+  game.ultimatums = game.ultimatums.filter((item) => item.from !== playerId && item.to !== playerId);
+  game.capitulationOffers = (game.capitulationOffers || []).filter((item) => item.from !== playerId && item.to !== playerId);
+  game.resourceRequests = game.resourceRequests.filter((request) => request.from !== playerId && request.to !== playerId);
+  setRelation(playerId, overlordId, "war");
+  addSystemEvent(`${player.country} начинает революцию против ${overlord.country}.`, { sound: "war" });
+  recomputePlayerFlags();
+  return true;
+}
+
 function forceVassalage(vassalId, overlordId, text = "") {
   const vassal = game.players[vassalId];
   const overlord = game.players[overlordId];
@@ -2807,6 +3190,7 @@ function forceVassalage(vassalId, overlordId, text = "") {
   }
   game.diplomacyOffers = game.diplomacyOffers.filter((offer) => offer.from !== vassalId && offer.to !== vassalId);
   game.ultimatums = game.ultimatums.filter((item) => item.from !== vassalId && item.to !== vassalId);
+  game.capitulationOffers = (game.capitulationOffers || []).filter((item) => item.from !== vassalId && item.to !== vassalId);
   game.resourceRequests = game.resourceRequests.filter((request) => request.from !== vassalId && request.to !== vassalId);
   addSystemEvent(text || `${vassal.country} становится вассалом ${overlord.country}.`, { sound: "diplomacy" });
   touchMap();
@@ -2827,6 +3211,7 @@ function releaseVassal(overlordId, vassalId) {
   vassal.capitulatedAt = 0;
   game.diplomacyOffers = game.diplomacyOffers.filter((offer) => offer.from !== vassalId && offer.to !== vassalId);
   game.ultimatums = game.ultimatums.filter((item) => item.from !== vassalId && item.to !== vassalId);
+  game.capitulationOffers = (game.capitulationOffers || []).filter((item) => item.from !== vassalId && item.to !== vassalId);
   game.resourceRequests = game.resourceRequests.filter((request) => request.from !== vassalId && request.to !== vassalId);
   for (const id of PLAYER_IDS) {
     if (id !== vassalId) clearRelation(vassalId, id);
@@ -2848,6 +3233,7 @@ function declareWar(fromId, toId) {
   setRelation(fromId, toId, "war");
   game.diplomacyOffers = game.diplomacyOffers.filter((offer) => !samePair(offer.from, offer.to, fromId, toId));
   game.ultimatums = game.ultimatums.filter((item) => !samePair(item.from, item.to, fromId, toId));
+  game.capitulationOffers = (game.capitulationOffers || []).filter((item) => !samePair(item.from, item.to, fromId, toId));
   game.resourceRequests = game.resourceRequests.filter((request) => !samePair(request.from, request.to, fromId, toId));
   cancelSupportBetween(fromId, toId);
   addSystemEvent(`${game.players[fromId].country} объявляет войну стране ${game.players[toId].country}!`, { sound: "war" });
@@ -3959,9 +4345,11 @@ function createFreshGame() {
     relations: {},
     diplomacyOffers: [],
     ultimatums: [],
+    capitulationOffers: [],
     resourceRequests: [],
     supportDeals: {},
     diplomacyCooldowns: {},
+    capitulationCooldowns: {},
     resourceRequestCooldowns: {},
     lobbyCreated: false,
     lobbyHostId: null,
@@ -4030,6 +4418,7 @@ function createPlayer(id) {
     defeated: false,
     vassalOf: null,
     capitulatedAt: 0,
+    devFreeActions: false,
     devAlwaysMisfire: false,
     lastEco: Date.now(),
     lastIronEco: Date.now(),
@@ -4060,6 +4449,8 @@ function startGame() {
   game.flatCellsSource = null;
   game.resourceRequests = [];
   game.ultimatums = [];
+  game.capitulationOffers = [];
+  game.capitulationCooldowns = {};
   game.supportDeals = {};
 
   const enabledBots = new Set(activeBotIds());
@@ -4095,6 +4486,7 @@ function startGame() {
     player.defeated = false;
     player.vassalOf = null;
     player.capitulatedAt = 0;
+    player.devFreeActions = false;
     player.devAlwaysMisfire = false;
     player.lastBotAction = Date.now() - BOT_TURN_INTERVAL_MS + randomInt(0, BOT_TURN_STAGGER_MS);
     player.lastDiplomacy = Date.now() + randomInt(5_000, 15_000);
@@ -4123,11 +4515,36 @@ function startGame() {
   game.timer = setInterval(() => runGameLoop(room), GAME_LOOP_INTERVAL_MS);
   recomputePlayerFlags();
   logServer("gameStarted", { room: roomDetails(game), settings: game.settings });
+  scheduleGameSave(true);
   broadcast({ type: "start" });
   broadcastState();
 }
 
 function generateMap() {
+  const mapType = MAP_TYPES.has(game.settings?.mapType) ? game.settings.mapType : "standard";
+  if (mapType === "islands") {
+    return generateIslandMap();
+  }
+
+  const cells = createMapCells("land");
+  if (mapType !== "noWater") {
+    paintNaturalRiver(cells);
+    paintHorizontalRiver(cells);
+    paintLakes(cells);
+  }
+
+  for (const start of Object.values(startingLayouts())) {
+    clearBaseZone(cells, start.x, start.y);
+  }
+  placeUnmirroredResources(cells, mapType === "noWater"
+    ? { goldRange: [8, 9], ironRange: [6, 7], uraniumRange: [2, 3], spacing: 1, skipWaterPreference: true }
+    : {}
+  );
+
+  return cells;
+}
+
+function createMapCells(defaultTerrain = "land") {
   const cells = [];
   for (let y = 0; y < HEIGHT; y += 1) {
     const row = [];
@@ -4135,7 +4552,7 @@ function generateMap() {
       row.push({
         x,
         y,
-        terrain: "land",
+        terrain: defaultTerrain,
         owner: null,
         building: null,
         construction: null,
@@ -4145,17 +4562,35 @@ function generateMap() {
     }
     cells.push(row);
   }
-
-  paintNaturalRiver(cells);
-  paintHorizontalRiver(cells);
-  paintLakes(cells);
-
-  for (const start of Object.values(startingLayouts())) {
-    clearBaseZone(cells, start.x, start.y);
-  }
-  placeUnmirroredResources(cells);
-
   return cells;
+}
+
+function generateIslandMap() {
+  const cells = createMapCells("water");
+  for (const start of Object.values(startingLayouts())) {
+    paintPlayerIsland(cells, start);
+  }
+  return cells;
+}
+
+function paintPlayerIsland(cells, start) {
+  for (let y = start.y - 2; y <= start.y + 2; y += 1) {
+    for (let x = start.x - 2; x <= start.x + 2; x += 1) {
+      const cell = getGeneratedCell(cells, x, y);
+      if (cell) cell.terrain = "land";
+    }
+  }
+
+  const deposits = [
+    [start.x - 2, start.y - 2, "gold"],
+    [start.x + 2, start.y - 2, "iron"],
+    [start.x - 2, start.y + 2, "uranium"],
+    [start.x + 2, start.y + 2, "gold"]
+  ];
+  for (const [x, y, terrain] of deposits) {
+    const cell = getGeneratedCell(cells, x, y);
+    if (cell) cell.terrain = terrain;
+  }
 }
 
 function startingLayouts() {
@@ -5027,7 +5462,17 @@ function incomeAmountFor(player, cell, cfg) {
 
 function lobbyIncomeMultiplier(cell) {
   const key = lobbyIncomeKey(cell);
-  return game.settings?.incomeMultipliers?.[key] ?? 1;
+  const lobbyMultiplier = game.settings?.incomeMultipliers?.[key] ?? 1;
+  return lobbyMultiplier * mapIncomeMultiplier(key);
+}
+
+function mapIncomeMultiplier(key) {
+  if (game.settings?.mapType === "islands") {
+    if (key === "farm") return 1.35;
+    if (key === "port") return 1.25;
+    if (key && key.startsWith("mine")) return 1.15;
+  }
+  return 1;
 }
 
 function lobbyIncomeKey(cell) {
@@ -7172,6 +7617,7 @@ function flushStateSnapshot() {
   if (!game) return;
   game.stateVersion += 1;
   game.lastStateBroadcastAt = Date.now();
+  scheduleGameSave(false);
   const stateSnapshot = serializeState(false);
   const mapUpdate = hasClientNeedingMap() ? prepareMapUpdate() : null;
   const chatSnapshot = hasClientNeedingChat() ? game.chat : null;
@@ -7326,6 +7772,7 @@ function serializeState(includeMap = true) {
       hqRebuild: player.hqDestroyed ? hqRebuildSeconds(player, now) : 0,
       defeated: Boolean(player.defeated),
       vassalOf: player.vassalOf || null,
+      devFreeActions: Boolean(player.devFreeActions),
       devAlwaysMisfire: Boolean(player.devAlwaysMisfire),
       ammoCapacity: ammoCapacity(id),
       specialOpCooldown: Math.max(0, Math.ceil(((player.specialOpCooldown || 0) - now) / 1000)),
@@ -7346,6 +7793,7 @@ function serializeState(includeMap = true) {
     relations: game.relations,
     diplomacyOffers: game.diplomacyOffers,
     ultimatums: game.ultimatums,
+    capitulationOffers: game.capitulationOffers || [],
     resourceRequests: game.resourceRequests,
     activeEvent: serializeTimedEvent(game.activeEvent, now),
     pendingEvent: serializeTimedEvent(game.pendingEvent, now),
@@ -7506,11 +7954,13 @@ function syncVassalDiplomacy() {
     }
     const offersBefore = game.diplomacyOffers.length;
     const ultimatumsBefore = game.ultimatums.length;
+    const capitulationsBefore = (game.capitulationOffers || []).length;
     const requestsBefore = game.resourceRequests.length;
     game.diplomacyOffers = game.diplomacyOffers.filter((offer) => offer.from !== vassalId && offer.to !== vassalId);
     game.ultimatums = game.ultimatums.filter((item) => item.from !== vassalId && item.to !== vassalId);
+    game.capitulationOffers = (game.capitulationOffers || []).filter((item) => item.from !== vassalId && item.to !== vassalId);
     game.resourceRequests = game.resourceRequests.filter((request) => request.from !== vassalId && request.to !== vassalId);
-    if (offersBefore !== game.diplomacyOffers.length || ultimatumsBefore !== game.ultimatums.length || requestsBefore !== game.resourceRequests.length) {
+    if (offersBefore !== game.diplomacyOffers.length || ultimatumsBefore !== game.ultimatums.length || capitulationsBefore !== (game.capitulationOffers || []).length || requestsBefore !== game.resourceRequests.length) {
       changed = true;
     }
     for (const id of PLAYER_IDS) {
@@ -7537,6 +7987,7 @@ function maybeCapitulateBots() {
   for (const botId of activeBotIds()) {
     const bot = game.players[botId];
     if (!bot || bot.defeated || bot.vassalOf) continue;
+    if ((game.capitulationOffers || []).some((offer) => offer.from === botId)) continue;
     const enemies = PLAYER_IDS
       .filter((id) => id !== botId && !isDefeated(id) && isHostile(botId, id))
       .sort((a, b) => (computeStats(b).power + computeStats(b).cells) - (computeStats(a).power + computeStats(a).cells));
@@ -7552,8 +8003,9 @@ function maybeCapitulateBots() {
     const hqCollapse = hqGone && stats.cells <= 10 && enemyStats.power >= Math.max(4, stats.power);
     if (!crushedCells && !crushedArmy && !overwhelmed && !hqCollapse) continue;
 
-    capitulateBot(botId, overlordId);
-    changed = true;
+    if (capitulateBot(botId, overlordId)) {
+      changed = true;
+    }
   }
   return changed;
 }
@@ -7562,7 +8014,7 @@ function capitulateBot(botId, overlordId) {
   const bot = game.players[botId];
   const overlord = game.players[overlordId];
   if (!bot || !overlord || bot.defeated) return false;
-  return forceVassalage(botId, overlordId, `${bot.country} капитулирует и становится вассалом ${overlord.country}.`);
+  return requestCapitulation(botId, overlordId);
 }
 
 // §7 Фермеры: мобилизация пехоты из казарм к HQ
@@ -7648,6 +8100,7 @@ function endGame(winnerId, reason) {
   addSystemEvent(`${game.ended.winner} победила. ${reason}`, { sound: "win" });
   clearInterval(game.timer);
   game.timer = null;
+  scheduleGameSave(true);
 }
 
 function activeContenderIds() {
@@ -7964,6 +8417,7 @@ function markPlayerDefeated(playerId) {
   player.vassalOf = null;
   game.diplomacyOffers = game.diplomacyOffers.filter((offer) => offer.from !== playerId && offer.to !== playerId);
   game.ultimatums = game.ultimatums.filter((item) => item.from !== playerId && item.to !== playerId);
+  game.capitulationOffers = (game.capitulationOffers || []).filter((item) => item.from !== playerId && item.to !== playerId);
   game.resourceRequests = game.resourceRequests.filter((request) => request.from !== playerId && request.to !== playerId);
   for (const key of Object.keys(game.supportDeals || {})) {
     const deal = game.supportDeals[key];
@@ -8057,10 +8511,13 @@ function jamNuclearPlants(playerId, until) {
 }
 
 function canPay(player, cost) {
+  if (!player) return false;
+  if (player.devFreeActions) return true;
   return Object.entries(cost).every(([resource, amount]) => (player.resources[resource] || 0) >= amount);
 }
 
 function spend(player, cost) {
+  if (!player || player.devFreeActions) return;
   for (const [resource, amount] of Object.entries(cost)) {
     player.resources[resource] = round1((player.resources[resource] || 0) - amount);
   }
@@ -8765,9 +9222,15 @@ function setWaterIfAllowed(cells, x, y) {
   return true;
 }
 
-function placeUnmirroredResources(cells) {
+function placeUnmirroredResources(cells, options = {}) {
   const cx = Math.floor(WIDTH / 2);
   const cy = Math.floor(HEIGHT / 2);
+  const goldRange = options.goldRange || [5, 6];
+  const ironRange = options.ironRange || [3, 4];
+  const uraniumRange = options.uraniumRange || [1, 2];
+  const terrainOptions = {
+    spacing: options.spacing ?? RESOURCE_SPACING
+  };
 
   // Four quadrants — resources spread evenly across the whole map
   const topLeft     = { x0: 1, x1: cx - 2, y0: 1, y1: cy - 2 };
@@ -8777,9 +9240,12 @@ function placeUnmirroredResources(cells) {
 
   // More map space needs more deposits, but spacing keeps them from becoming dense.
   for (const region of [topLeft, topRight, bottomLeft, bottomRight]) {
-    placeTerrainInRegion(cells, "gold", randomInt(5, 6), region);
-    placeTerrainInRegion(cells, "iron", randomInt(3, 4), region);
-    placeTerrainInRegion(cells, "uranium", randomInt(1, 2), region, { nearWater: true });
+    placeTerrainInRegion(cells, "gold", randomInt(goldRange[0], goldRange[1]), region, terrainOptions);
+    placeTerrainInRegion(cells, "iron", randomInt(ironRange[0], ironRange[1]), region, terrainOptions);
+    placeTerrainInRegion(cells, "uranium", randomInt(uraniumRange[0], uraniumRange[1]), region, {
+      ...terrainOptions,
+      nearWater: !options.skipWaterPreference
+    });
   }
 }
 
