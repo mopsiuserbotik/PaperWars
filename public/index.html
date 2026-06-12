@@ -26,6 +26,7 @@
           </div>
           <div class="lobby-tools">
             <button id="lobbySoundButton" class="top-tool" type="button" title="Sound">♪</button>
+            <button id="lobbyHelpButton" class="top-tool top-tool--info" type="button" title="Справка">i</button>
             <button id="lobbyThemeButton" class="top-tool" type="button" title="Тема">☾</button>
           </div>
 
@@ -95,6 +96,8 @@
             <div id="quickStatus" class="quick-status"></div>
             <div class="top-tools" aria-label="Системные действия">
               <button id="themeButton" class="top-tool" type="button" title="Тема">☾</button>
+              <button id="helpButton" class="top-tool top-tool--info" type="button" title="Справка">i</button>
+              <button id="uiToggleButton" class="top-tool top-tool--eye" type="button" title="Скрыть интерфейс" aria-pressed="false"><span class="eye-icon" aria-hidden="true"></span></button>
               <button id="statsButton" class="top-tool" type="button" title="Статистика">▦</button>
               <button id="exitButton" class="top-tool top-tool--danger" type="button" title="Выход">×</button>
             </div>
@@ -121,7 +124,7 @@
 
         <section id="chatDrawer" class="chat-drawer hidden">
           <header class="chat-head">
-            <strong>События и чат</strong>
+            <strong>Чат</strong>
             <button id="chatClose" type="button">×</button>
           </header>
           <div id="chatLog" class="chat-log"></div>

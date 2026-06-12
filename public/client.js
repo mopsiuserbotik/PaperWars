@@ -260,6 +260,9 @@ const els = {
   soundButton: document.querySelector("#soundButton"),
   lobbySoundButton: document.querySelector("#lobbySoundButton"),
   themeButton: document.querySelector("#themeButton"),
+  helpButton: document.querySelector("#helpButton"),
+  lobbyHelpButton: document.querySelector("#lobbyHelpButton"),
+  uiToggleButton: document.querySelector("#uiToggleButton"),
   exitButton: document.querySelector("#exitButton"),
   developerButton: document.querySelector("#developerButton"),
   endOverlay: document.querySelector("#endOverlay"),
@@ -327,6 +330,7 @@ let reconnectTimer = null;
 let reconnectAttempts = 0;
 let heartbeatTimer = null;
 let serverFull = false;
+let interfaceHidden = false;
 const SFX_NAMES = [
   "attack", "drone", "drone_run", "d_house", "d_tehnika", "fail", "kreyser", "money", "osechka", "pikap", "pvo", "rain", "raketa", "reb",
   "rpg", "rszo", "rszo_hit", "rszo_shot", "shahed", "soyuz", "stroyka", "tank", "tank_shot", "war", "win", "yaderka"
@@ -426,6 +430,49 @@ function ensureDynamicUi() {
       els.lobbySoundButton.className = "top-tool";
       els.lobbySoundButton.type = "button";
       lobbyTools.prepend(els.lobbySoundButton);
+    }
+  }
+
+  if (!els.lobbyHelpButton) {
+    const lobbyTools = document.querySelector(".lobby-tools");
+    if (lobbyTools) {
+      els.lobbyHelpButton = document.createElement("button");
+      els.lobbyHelpButton.id = "lobbyHelpButton";
+      els.lobbyHelpButton.className = "top-tool top-tool--info";
+      els.lobbyHelpButton.type = "button";
+      els.lobbyHelpButton.title = "\u0421\u043f\u0440\u0430\u0432\u043a\u0430";
+      els.lobbyHelpButton.textContent = "i";
+      const anchor = els.lobbyThemeButton || null;
+      lobbyTools.insertBefore(els.lobbyHelpButton, anchor);
+    }
+  }
+
+  if (!els.helpButton) {
+    const topTools = document.querySelector(".top-tools");
+    if (topTools) {
+      els.helpButton = document.createElement("button");
+      els.helpButton.id = "helpButton";
+      els.helpButton.className = "top-tool top-tool--info";
+      els.helpButton.type = "button";
+      els.helpButton.title = "\u0421\u043f\u0440\u0430\u0432\u043a\u0430";
+      els.helpButton.textContent = "i";
+      const anchor = els.statsButton || els.exitButton || null;
+      topTools.insertBefore(els.helpButton, anchor);
+    }
+  }
+
+  if (!els.uiToggleButton) {
+    const topTools = document.querySelector(".top-tools");
+    if (topTools) {
+      els.uiToggleButton = document.createElement("button");
+      els.uiToggleButton.id = "uiToggleButton";
+      els.uiToggleButton.className = "top-tool top-tool--eye";
+      els.uiToggleButton.type = "button";
+      els.uiToggleButton.title = "\u0421\u043a\u0440\u044b\u0442\u044c \u0438\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441";
+      els.uiToggleButton.setAttribute("aria-pressed", "false");
+      els.uiToggleButton.innerHTML = '<span class="eye-icon" aria-hidden="true"></span>';
+      const anchor = els.statsButton || els.exitButton || null;
+      topTools.insertBefore(els.uiToggleButton, anchor);
     }
   }
 
@@ -722,6 +769,9 @@ function bindUi() {
   });
   els.soundButton?.addEventListener("click", toggleSound);
   els.lobbySoundButton?.addEventListener("click", toggleSound);
+  els.helpButton?.addEventListener("click", openHelpModal);
+  els.lobbyHelpButton?.addEventListener("click", openHelpModal);
+  els.uiToggleButton?.addEventListener("click", toggleInterfaceVisibility);
 
   els.statsButton?.addEventListener("click", () => {
     statsOpen = !statsOpen;
@@ -903,6 +953,7 @@ function handleServerMessage(message) {
     renderedEndOverlayKey = "";
     mapBubbles = [];
     statsOpen = false;
+    setInterfaceHidden(false);
     nukeSmokes = [];
     impactSmokes = [];
     shotEffects = [];
@@ -940,6 +991,7 @@ function handleServerMessage(message) {
     renderedEndOverlayKey = "";
     mapBubbles = [];
     statsOpen = false;
+    setInterfaceHidden(false);
     nukeSmokes = [];
     impactSmokes = [];
     shotEffects = [];
@@ -2986,6 +3038,144 @@ function disabledCommandButton(label, reason) {
   return `<button class="command" type="button" disabled>${label}<span>${reason}</span></button>`;
 }
 
+function toggleInterfaceVisibility() {
+  setInterfaceHidden(!interfaceHidden);
+}
+
+function setInterfaceHidden(hidden) {
+  interfaceHidden = Boolean(hidden);
+  if (interfaceHidden) {
+    closeChat();
+    closeJournal();
+    statsOpen = false;
+    renderStatsOverlay();
+  }
+  applyInterfaceVisibility();
+}
+
+function applyInterfaceVisibility() {
+  els.game?.classList.toggle("game--ui-hidden", interfaceHidden);
+  if (!els.uiToggleButton) return;
+  els.uiToggleButton.classList.toggle("is-active", interfaceHidden);
+  els.uiToggleButton.setAttribute("aria-pressed", interfaceHidden ? "true" : "false");
+  els.uiToggleButton.title = interfaceHidden ? "Показать интерфейс" : "Скрыть интерфейс";
+}
+
+function openHelpModal() {
+  modalSubmitHandler = null;
+  const sections = [
+    {
+      title: "Цель матча",
+      items: [
+        "Захватывай клетки, строй экономику и доведи остальные страны до поражения, вассалитета или капитуляции.",
+        "Страна считается живой, пока у нее есть территория и не истекло окно восстановления штаба.",
+        "Если в конце остались сюзерен и его вассалы, победа засчитывается сюзерену."
+      ]
+    },
+    {
+      title: "Карты",
+      items: [
+        "Стандарт: обычная карта с водой, ресурсами и привычной плотностью территорий.",
+        "Острова: вода вокруг, отдельный остров 5x5 на страну, на каждом острове есть золото, железо и уран, добыча усилена.",
+        "Без воды: стандартная суша без рек и озер, ресурсов больше."
+      ]
+    },
+    {
+      title: "Ресурсы",
+      items: [
+        "Золото нужно почти для всего: стройка, найм, техника и дипломатические переводы.",
+        "Железо и боеприпасы нужны для техники, ракет, дронов, шахедов и тяжелого оружия.",
+        "Население тратится на пехоту и экипажи; распуск пехоты возвращает 1 золото и 1 население за бойца.",
+        "Уран нужен для продвинутого оружия и ядерных объектов."
+      ]
+    },
+    {
+      title: "Постройки",
+      items: [
+        "Штаб является базовой точкой страны; потеря штаба запускает окно восстановления.",
+        "Фермы, деревни, города, порты, шахты, казармы и заводы дают регулярный доход или войска.",
+        "Завод может уйти в забастовку; пехота или гранатометчик на клетке защищают завод.",
+        "Мосты открывают проход через воду, порты и корабли работают с водными клетками.",
+        "Бункер защищает клетку, ПВО и ПВО+ сбивают воздушные угрозы, РЭБ мешает дронам."
+      ]
+    },
+    {
+      title: "Войска и движение",
+      items: [
+        "Двигаться можно только доступными юнитами с выбранной клетки; недоступные команды серые.",
+        "Пехота и гранатометчики захватывают клетки, техника усиливает бой и огонь.",
+        "Дроны и шахеды летают отдельно, но расходуют боеприпасы и могут быть перехвачены.",
+        "Корабли нужны для воды; крейсер стреляет по берегу и водным целям."
+      ]
+    },
+    {
+      title: "Захват и война",
+      items: [
+        "Нейтральные клетки можно занимать, вражеские требуют войны или уже враждебных отношений.",
+        "Атака по стране, с которой еще нет войны, объявляет войну; повторные удары по текущему врагу не повторяют звук объявления.",
+        "Захват клетки идет через визуальный штрих, затем клетка полностью перекрашивается после тайминга атаки.",
+        "Если страна капитулирует, победитель выбирает: продолжать захват или сделать ее вассалом."
+      ]
+    },
+    {
+      title: "Оружие",
+      items: [
+        "Танк, РПГ, ракеты, РСЗО, крейсер, шахед и ядерка имеют свои условия запуска и перезарядки.",
+        "Перед запуском ядерки или шахеда сначала выбирается оружие, затем на экране появляется подсказка выбрать клетку.",
+        "ПВО, ПВО+, РЭБ и пикапы могут перехватывать часть угроз в радиусе.",
+        "Осечка может сорвать выстрел; спецоперации и события могут временно ухудшать оружие."
+      ]
+    },
+    {
+      title: "Дипломатия",
+      items: [
+        "Можно объявлять войну, заключать союз, отправлять ультиматум, просить или передавать ресурсы.",
+        "Вассал может начать революцию, чтобы освободиться.",
+        "Игрок может капитулировать перед страной, с которой идет война; решение принимает победитель.",
+        "Если сюзерен запрашивает ресурсы у своего вассала, перевод выполняется автоматически без подтверждения."
+      ]
+    },
+    {
+      title: "События и спецоперации",
+      items: [
+        "Случайные события временно меняют условия матча: дождь, засуха, туман, эпидемия и другие эффекты.",
+        "Спецоперации проходят с шансом успеха и срабатывают после задержки.",
+        "Контрразведка снижает риск вражеских спецопераций.",
+        "В Dev режиме события, перезарядки, ресурсы и бесплатные действия можно переключать для тестов."
+      ]
+    },
+    {
+      title: "Интерфейс",
+      items: [
+        "Кнопка i открывает эту справку в лобби и в матче.",
+        "Журнал показывает боевые события, чат оставлен только для сообщений игроков.",
+        "Кнопки действий становятся серыми, если команда сейчас невозможна.",
+        "Кнопка выхода закрывает комнату для всех игроков, поэтому перед выходом появляется подтверждение."
+      ]
+    }
+  ];
+
+  els.modalLayer.innerHTML = `
+    <div class="modal-box modal-box--help" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <strong>Справка</strong>
+        <button data-modal-close type="button">×</button>
+      </div>
+      <div class="help-rules">
+        ${sections.map((section) => `
+          <section class="help-section">
+            <h3>${escapeHtml(section.title)}</h3>
+            <ul>
+              ${section.items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+            </ul>
+          </section>
+        `).join("")}
+      </div>
+    </div>
+  `;
+  els.modalLayer.classList.remove("hidden");
+}
+
 function openResourceBundleModal({ title, submitLabel, targetSelect = false, onSubmit }) {
   if (targetSelect && !targetCountryOptionsHtml()) {
     showToast("Нет доступных стран.");
@@ -4328,7 +4518,7 @@ function applyTheme(theme) {
     els.lobbyThemeButton.title = normalized === "dark" ? "Светлая тема" : "Темная тема";
   }
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = normalized === "dark" ? "#061008" : "#f5f5f2";
+  if (meta) meta.content = normalized === "dark" ? "#050505" : "#f5f5f2";
   try {
     localStorage.setItem("paperWarsTheme", normalized);
   } catch (error) {}

@@ -1,4 +1,4 @@
-const CACHE_NAME = "paper-wars-shell-v32";
+const CACHE_NAME = "paper-wars-shell-v34";
 const APP_SHELL = [
   "/",
   "/index.html",
