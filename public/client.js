@@ -1095,6 +1095,7 @@ function handleServerMessage(message) {
 
   if (message.type === "sfx") {
     if (message.name === "shot") addShotEffect(message);
+    if (message.name === "shahed") return;
     playSfx(message.name, message);
   }
 
@@ -1283,6 +1284,7 @@ function addFlightEffect(detail) {
     const removed = flightEffects.shift();
     stopFlightSfx(removed?.id);
   }
+  if (effect.kind === "shahed") startFlightSfx(effect);
   refreshMapEffects(duration);
 }
 
